@@ -114,6 +114,37 @@ class ImageCanvas(QWidget):
             add(self.npt(fr,1,1),self.npt(fr,0,.28),'#ff9f43')
         if self.owner.show_symmetry.isChecked():
             add(self.npt(fr,.5,0),self.npt(fr,.5,1),'#64d8cb')
+        if self.owner.show_radiating.isChecked():
+            # A clean radial fan: all rays meet at the frame center.
+            c=self.npt(fr,.5,.5)
+            edge=[]
+            for q in (0,.2,.4,.6,.8,1):
+                edge += [self.npt(fr,q,0), self.npt(fr,q,1)]
+            for q in (.2,.4,.6,.8):
+                edge += [self.npt(fr,0,q), self.npt(fr,1,q)]
+            for pt in edge: add(c,pt,'#ff6b6b')
+        if self.owner.show_tunnel.isChecked():
+            col='#f97316'
+            # Nested frames plus corner connectors.
+            for inset in (.18,.34):
+                a=self.npt(fr,inset,inset); b=self.npt(fr,1-inset,inset); cc=self.npt(fr,1-inset,1-inset); d=self.npt(fr,inset,1-inset)
+                add(a,b,col); add(b,cc,col); add(cc,d,col); add(d,a,col)
+            for x,y in ((0,0),(1,0),(1,1),(0,1)):
+                ix=.18 if x==0 else .82; iy=.18 if y==0 else .82
+                add(self.npt(fr,x,y),self.npt(fr,ix,iy),col)
+        if self.owner.show_golden_triangle.isChecked():
+            col='#ffd166'
+            add(self.npt(fr,0,1),self.npt(fr,1,0),col)
+            add(self.npt(fr,0,0),self.npt(fr,.42,1),col)
+            add(self.npt(fr,.62,0),self.npt(fr,1,1),col)
+        if self.owner.show_vshape.isChecked():
+            col='#ff477e'; add(self.npt(fr,.18,0),self.npt(fr,.5,1),col); add(self.npt(fr,.82,0),self.npt(fr,.5,1),col)
+        if self.owner.show_double_diagonal.isChecked():
+            col='#c77dff'; add(self.npt(fr,0,.15),self.npt(fr,.68,1),col); add(self.npt(fr,0,.62),self.npt(fr,1,.08),col)
+        if self.owner.show_lshape.isChecked():
+            col='#2ec4b6'; add(self.npt(fr,.20,.14),self.npt(fr,.20,.84),col); add(self.npt(fr,.20,.84),self.npt(fr,.82,.84),col)
+        if self.owner.show_pyramid.isChecked():
+            col='#fb8500'; a=self.npt(fr,.5,.12); b=self.npt(fr,.14,.88); cc=self.npt(fr,.86,.88); add(a,b,col); add(b,cc,col); add(cc,a,col)
         for q in self.owner.helper_v:
             add(self.npt(fr,q,0),self.npt(fr,q,1),self.owner.helper_color)
         for q in self.owner.helper_h:
@@ -134,6 +165,22 @@ class ImageCanvas(QWidget):
             pen=self._guide_pen(color)
             if color=='#64d8cb' and self.owner.show_symmetry.isChecked(): pen.setStyle(Qt.PenStyle.DashLine)
             p.setPen(pen); p.drawLine(a,b)
+        # Curved composition guides are drawn separately from straight-line intersection logic.
+        from PySide6.QtGui import QPainterPath
+        curve_alpha=round(255*self.owner.guide_alpha.value()/100)
+        curve_width=self.owner.guide_width.val()
+        if self.owner.show_circle.isChecked():
+            col=QColor('#ff5d8f'); col.setAlpha(curve_alpha); pen=QPen(col); pen.setWidthF(curve_width); p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
+            cr=QRectF(fr.left()+fr.width()*.16, fr.top()+fr.height()*.08, fr.width()*.68, fr.height()*.84); p.drawEllipse(cr)
+        if self.owner.show_cshape.isChecked():
+            col=QColor('#ff5d8f'); col.setAlpha(curve_alpha); pen=QPen(col); pen.setWidthF(curve_width); p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
+            cr=QRectF(fr.left()+fr.width()*.16, fr.top()+fr.height()*.08, fr.width()*.68, fr.height()*.84)
+            # Open C facing right. Qt angles are in sixteenths of a degree.
+            p.drawArc(cr, 55*16, 250*16)
+        if self.owner.show_scurve.isChecked():
+            col=QColor('#ef476f'); col.setAlpha(curve_alpha); pen=QPen(col); pen.setWidthF(curve_width); p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
+            path=QPainterPath(self.npt(fr,.72,.14)); path.cubicTo(self.npt(fr,.18,.05),self.npt(fr,.18,.46),self.npt(fr,.52,.48)); path.cubicTo(self.npt(fr,.86,.50),self.npt(fr,.83,.91),self.npt(fr,.28,.86)); p.drawPath(path)
+
         if self.owner.show_spiral.isChecked():
             c=QColor('#ffd166'); c.setAlpha(round(255*self.owner.guide_alpha.value()/100)); pen=QPen(c); pen.setWidthF(self.owner.guide_width.val()); p.setPen(pen)
             pts=[]; cx=fr.left()+fr.width()*.382; cy=fr.top()+fr.height()*.618; maxr=min(fr.width(),fr.height())*.62
@@ -287,18 +334,18 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.1'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.helper_v=[]; self.helper_h=[]; self.helper_free=[]; self.selected_helper=None
         self.helper_color='#36d1ff'; self.point_color='#ff3838'; self.frame_color='#20f26b'
-        self._build_ui(); self._style(); self.statusBar().showMessage('V5 — 自由変形フレーム操作版')
+        self._build_ui(); self._style(); self.statusBar().showMessage('V5.1 — 構図ガイド拡張版')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
         root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5 / 構図・自由変形フレーム版'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.1 / 構図ガイド拡張版'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -307,6 +354,22 @@ class MovieShotAnalyzer(QMainWindow):
         self.show_thirds=QCheckBox('三分割（固定）'); self.show_thirds.setChecked(True)
         self.show_cross=QCheckBox('中央十字'); self.show_golden=QCheckBox('黄金比'); self.show_spiral=QCheckBox('黄金螺旋'); self.show_diagonal=QCheckBox('対角線'); self.show_triangle=QCheckBox('三角構図'); self.show_symmetry=QCheckBox('対称軸')
         for w in (self.show_thirds,self.show_cross,self.show_golden,self.show_spiral,self.show_diagonal,self.show_triangle,self.show_symmetry): w.toggled.connect(self.refresh); c.addWidget(w)
+
+        self.section(c,'追加構図ガイド')
+        self.show_radiating=QCheckBox('放射構図')
+        self.show_tunnel=QCheckBox('トンネル / フレームインフレーム')
+        self.show_golden_triangle=QCheckBox('ゴールデントライアングル')
+        self.show_circle=QCheckBox('円構図')
+        self.show_cshape=QCheckBox('C字構図')
+        self.show_vshape=QCheckBox('V字構図')
+        self.show_double_diagonal=QCheckBox('ダブル対角線')
+        self.show_scurve=QCheckBox('S字構図')
+        self.show_lshape=QCheckBox('L字構図')
+        self.show_pyramid=QCheckBox('ピラミッド構図')
+        for w in (self.show_radiating,self.show_tunnel,self.show_golden_triangle,self.show_circle,self.show_cshape,self.show_vshape,self.show_double_diagonal,self.show_scurve,self.show_lshape,self.show_pyramid):
+            w.toggled.connect(self.refresh); c.addWidget(w)
+        kindnote=QLabel('※ Balance / Unbalanced などは固定線ではなく、後の「画像を見て判断する構図タイプ」解析に入れる予定です。')
+        kindnote.setObjectName('note'); kindnote.setWordWrap(True); c.addWidget(kindnote)
 
         self.section(c,'補助線')
         row=QHBoxLayout(); av=QPushButton('＋ 縦'); ah=QPushButton('＋ 横'); af=QPushButton('＋ 自由線'); av.clicked.connect(self.add_vertical); ah.clicked.connect(self.add_horizontal); af.clicked.connect(self.add_free); row.addWidget(av); row.addWidget(ah); row.addWidget(af); c.addLayout(row)
