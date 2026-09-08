@@ -230,7 +230,14 @@ class ImageCanvas(QWidget):
     def _comp_handle_points(self,fr,name):
         d=self.owner.comp_guides[name]
         if name=='radiating': return [self.npt(fr,*d['center'])]
-        if name in ('tunnel','golden_triangle','vshape','double_diagonal','scurve','lshape','pyramid'):
+        if name=='tunnel':
+            # Photoshop-like 8-point transform handles for the tunnel's inner frame:
+            # 4 corners followed by top/right/bottom/left side midpoints.
+            corners=[self.npt(fr,*q) for q in d['points']]
+            mids=[QPointF((corners[i].x()+corners[(i+1)%4].x())/2,
+                          (corners[i].y()+corners[(i+1)%4].y())/2) for i in range(4)]
+            return corners+mids
+        if name in ('golden_triangle','vshape','double_diagonal','scurve','lshape','pyramid'):
             return [self.npt(fr,*q) for q in d['points']]
         if name in ('circle','cshape'):
             cx,cy=d['center']; rx,ry=d['rx'],d['ry']
@@ -371,7 +378,7 @@ class ImageCanvas(QWidget):
             typ=hit[0]
             if typ in ('comp_handle','comp_line'):
                 self.owner.selected_comp_guide=hit[1]; self.owner.reset_comp_btn.setEnabled(True); self.owner.selected_helper=None; self.owner.update_helper_buttons(); self.update()
-                if typ=='comp_line':
+                if typ=='comp_line' or (typ=='comp_handle' and hit[1]=='tunnel' and hit[2]>=4):
                     import copy
                     self._drag_start=e.position(); self._comp_drag_orig=copy.deepcopy(self.owner.comp_guides[hit[1]])
             if typ in ('v','h','free_line','free_end'):
@@ -393,6 +400,25 @@ class ImageCanvas(QWidget):
                 if i==0: d['center']=(nx,ny)
                 elif i==1: d['rx']=max(.03,min(.5,abs(nx-cx)))
                 elif i==2: d['ry']=max(.03,min(.5,abs(ny-cy)))
+            elif name=='tunnel' and i>=4:
+                # Side-center handles move the corresponding side as a pair,
+                # matching the green actual-frame transform behavior.
+                edge=i-4
+                orig=self._comp_drag_orig['points']
+                aidx,bidx=((0,1),(1,2),(2,3),(3,0))[edge]
+                a=self.npt(fr,*orig[aidx]); b=self.npt(fr,*orig[bidx])
+                vx=b.x()-a.x(); vy=b.y()-a.y(); ln=max(1e-8,math.hypot(vx,vy))
+                px=-vy/ln; py=vx/ln
+                mdx=pos.x()-self._drag_start.x(); mdy=pos.y()-self._drag_start.y()
+                amount=mdx*px+mdy*py
+                dx=(amount*px)/max(1,fr.width()); dy=(amount*py)/max(1,fr.height())
+                lo_dx=max(-orig[aidx][0],-orig[bidx][0]); hi_dx=min(1-orig[aidx][0],1-orig[bidx][0])
+                lo_dy=max(-orig[aidx][1],-orig[bidx][1]); hi_dy=min(1-orig[aidx][1],1-orig[bidx][1])
+                dx=max(lo_dx,min(hi_dx,dx)); dy=max(lo_dy,min(hi_dy,dy))
+                pts=[list(q) for q in orig]
+                for j in (aidx,bidx):
+                    pts[j][0]=orig[j][0]+dx; pts[j][1]=orig[j][1]+dy
+                d['points']=[tuple(q) for q in pts]
             else:
                 pts=list(d['points']); pts[i]=(nx,ny); d['points']=pts
         elif typ=='comp_line':

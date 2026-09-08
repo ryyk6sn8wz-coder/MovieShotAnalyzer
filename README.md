@@ -1,8 +1,11 @@
-# Movie Shot Analyzer V5.2.2
+# Movie Shot Analyzer V5.2.3
 
-V5.2.1を基準に、交点○の表示ルールを整理した修正版です。
+V5.2.3 adds Photoshop-like 8-point editing handles to the Tunnel / Frame-within-frame guide.
 
-- 基本ガイド（三分割、中央十字、黄金比、対角線、三角構図、対称軸）は従来どおり交点の塗りつぶし○を表示できます。
-- 追加構図ガイド（トンネル、放射、V字、円/C字、S字、L字、ピラミッド等）は通常表示では○を出しません。
-- 追加構図ガイドの白い○は、編集モードでそのガイドを選択した時だけ編集ハンドルとして表示します。
-- トンネルは編集時のみ内側4隅に白い○を表示し、個別にドラッグできます。
+- Basic guides keep their normal filled intersection circles.
+- Additional composition guides show no circles during normal viewing.
+- Edit handles appear only while an additional guide is selected for editing.
+- Tunnel guide: 4 corner handles + 4 side-center handles.
+- Tunnel corners reshape independently.
+- Tunnel side-center handles move the corresponding side as a pair.
+- Dragging the tunnel guide body moves the whole inner tunnel frame.
