@@ -1,18 +1,17 @@
-# Movie Shot Analyzer V4 Base
+# Movie Shot Analyzer V4 Analyzer 1
 
-This is the stability-check build before advanced Analyzer features are added.
+V4 BaseでWindows UIの正常動作を確認した後の、構図・フレーム機能追加版です。
 
-## What to verify on Windows
-1. The left control panel is visible (not an empty white area).
-2. `画像を開く` loads an image.
-3. `フォルダを開く` loads all supported images recursively.
-4. Drag & drop of an image or folder works.
-5. `三分割を表示` toggles red thirds lines.
-6. `中央十字を表示` toggles blue center lines.
-7. Previous/next buttons move through a loaded folder.
+## 追加機能
+- 三分割（固定）/ 中央十字
+- 黄金比 / 黄金螺旋 / 対角線 / 三角構図 / 対称軸
+- 三分割とは独立した追加補助線（縦・横 各0〜3本）
+- 追加補助線を画像上で直接ドラッグ
+- 実映像フレーム枠（緑）
+- 黒帯の自動検出
+- フレーム4辺を画像上で直接ドラッグ調整
+- 明るさ / コントラスト / ガンマ / 彩度（表示のみ。元画像は変更しない）
+- カラー / モノクロ対応
+- 画像 / フォルダ読み込み、ドラッグ＆ドロップ、前後移動
 
-Advanced perspective, VP, frame detection and lens-estimation features are intentionally NOT included in this base build. They will be added only after the Windows EXE UI is confirmed stable.
-
-## GitHub Actions
-Run workflow: `Build Movie Shot Analyzer V4 Base for Windows`
-Download artifact: `MovieShotAnalyzer-V4-Base-Windows`
+次段階で VP1〜3、画像外VP、アイレベル、自動VP候補、35mm換算レンズ推定を追加します。
