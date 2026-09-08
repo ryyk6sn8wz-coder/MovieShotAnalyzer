@@ -1,11 +1,23 @@
-# Movie Shot Analyzer V5.2.3
+# Movie Shot Analyzer V5.3 — Perspective Stage 1
 
-V5.2.3 adds Photoshop-like 8-point editing handles to the Tunnel / Frame-within-frame guide.
+V5.2.3 の構図ガイド機能を維持したまま、パース解析の第1段階を追加した版です。
 
-- Basic guides keep their normal filled intersection circles.
-- Additional composition guides show no circles during normal viewing.
-- Edit handles appear only while an additional guide is selected for editing.
-- Tunnel guide: 4 corner handles + 4 side-center handles.
-- Tunnel corners reshape independently.
-- Tunnel side-center handles move the corresponding side as a pair.
-- Dragging the tunnel guide body moves the whole inner tunnel frame.
+## 追加機能
+- VP1 / VP2 の表示と直接ドラッグ
+- VPを画像外へ配置可能
+- アイレベル（黄色破線）の表示と上下ドラッグ
+- VP1 / VP2 とアイレベルの連動 ON/OFF
+- 作業領域 100–400%（画像を縮小して画面外VP用スペースを確保）
+- VPから実映像フレームの四隅・辺中央へのパース補助線
+- 画像ごとにVP位置を保持（アプリ起動中）
+
+## 既存機能
+- 基本構図ガイドと交点○
+- 可動追加構図ガイド
+- トンネル8アンカー
+- 補助線
+- 実映像フレーム自由変形
+- 黒帯自動検出
+- 表示補正
+
+次段階で VP3、パース線の詳細調整、35mm換算レンズ推定を追加予定です。
