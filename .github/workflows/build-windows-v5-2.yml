@@ -1,0 +1,39 @@
+name: Build Movie Shot Analyzer V5.2 Movable Guides for Windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build Windows app
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --windowed --onedir --name MovieShotAnalyzer movie_shot_analyzer.py
+
+      - name: Create ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/MovieShotAnalyzer/* -DestinationPath MovieShotAnalyzer_V5_2_MovableGuides_Windows.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MovieShotAnalyzer-V5.2-MovableGuides-Windows
+          path: MovieShotAnalyzer_V5_2_MovableGuides_Windows.zip
