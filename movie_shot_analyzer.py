@@ -115,8 +115,8 @@ class ImageCanvas(QWidget):
         if self.owner.show_symmetry.isChecked():
             add(self.npt(fr,.5,0),self.npt(fr,.5,1),'#64d8cb')
         if self.owner.show_radiating.isChecked():
-            # A clean radial fan: all rays meet at the frame center.
-            c=self.npt(fr,.5,.5)
+            # A clean radial fan: all rays meet at an editable center.
+            cx,cy=self.owner.comp_guides['radiating']['center']; c=self.npt(fr,cx,cy)
             edge=[]
             for q in (0,.2,.4,.6,.8,1):
                 edge += [self.npt(fr,q,0), self.npt(fr,q,1)]
@@ -125,26 +125,26 @@ class ImageCanvas(QWidget):
             for pt in edge: add(c,pt,'#ff6b6b')
         if self.owner.show_tunnel.isChecked():
             col='#f97316'
-            # Nested frames plus corner connectors.
-            for inset in (.18,.34):
-                a=self.npt(fr,inset,inset); b=self.npt(fr,1-inset,inset); cc=self.npt(fr,1-inset,1-inset); d=self.npt(fr,inset,1-inset)
-                add(a,b,col); add(b,cc,col); add(cc,d,col); add(d,a,col)
-            for x,y in ((0,0),(1,0),(1,1),(0,1)):
-                ix=.18 if x==0 else .82; iy=.18 if y==0 else .82
-                add(self.npt(fr,x,y),self.npt(fr,ix,iy),col)
+            pts=self.owner.comp_guides['tunnel']['points']
+            q=[self.npt(fr,*xy) for xy in pts]
+            for i in range(4): add(q[i],q[(i+1)%4],col)
+            for outer,inner in zip(((0,0),(1,0),(1,1),(0,1)),pts): add(self.npt(fr,*outer),self.npt(fr,*inner),col)
+            # A second nested ring follows the editable inner frame toward its center.
+            cx=sum(x for x,y in pts)/4; cy=sum(y for x,y in pts)/4
+            q2=[]
+            for x,y in pts: q2.append(self.npt(fr,cx+(x-cx)*.55,cy+(y-cy)*.55))
+            for i in range(4): add(q2[i],q2[(i+1)%4],col)
         if self.owner.show_golden_triangle.isChecked():
-            col='#ffd166'
-            add(self.npt(fr,0,1),self.npt(fr,1,0),col)
-            add(self.npt(fr,0,0),self.npt(fr,.42,1),col)
-            add(self.npt(fr,.62,0),self.npt(fr,1,1),col)
+            col='#ffd166'; pts=self.owner.comp_guides['golden_triangle']['points']
+            add(self.npt(fr,*pts[0]),self.npt(fr,*pts[1]),col); add(self.npt(fr,*pts[2]),self.npt(fr,*pts[3]),col); add(self.npt(fr,*pts[4]),self.npt(fr,*pts[5]),col)
         if self.owner.show_vshape.isChecked():
-            col='#ff477e'; add(self.npt(fr,.18,0),self.npt(fr,.5,1),col); add(self.npt(fr,.82,0),self.npt(fr,.5,1),col)
+            col='#ff477e'; pts=self.owner.comp_guides['vshape']['points']; add(self.npt(fr,*pts[0]),self.npt(fr,*pts[1]),col); add(self.npt(fr,*pts[2]),self.npt(fr,*pts[1]),col)
         if self.owner.show_double_diagonal.isChecked():
-            col='#c77dff'; add(self.npt(fr,0,.15),self.npt(fr,.68,1),col); add(self.npt(fr,0,.62),self.npt(fr,1,.08),col)
+            col='#c77dff'; pts=self.owner.comp_guides['double_diagonal']['points']; add(self.npt(fr,*pts[0]),self.npt(fr,*pts[1]),col); add(self.npt(fr,*pts[2]),self.npt(fr,*pts[3]),col)
         if self.owner.show_lshape.isChecked():
-            col='#2ec4b6'; add(self.npt(fr,.20,.14),self.npt(fr,.20,.84),col); add(self.npt(fr,.20,.84),self.npt(fr,.82,.84),col)
+            col='#2ec4b6'; pts=self.owner.comp_guides['lshape']['points']; add(self.npt(fr,*pts[0]),self.npt(fr,*pts[1]),col); add(self.npt(fr,*pts[1]),self.npt(fr,*pts[2]),col)
         if self.owner.show_pyramid.isChecked():
-            col='#fb8500'; a=self.npt(fr,.5,.12); b=self.npt(fr,.14,.88); cc=self.npt(fr,.86,.88); add(a,b,col); add(b,cc,col); add(cc,a,col)
+            col='#fb8500'; pts=self.owner.comp_guides['pyramid']['points']; a=self.npt(fr,*pts[0]); b=self.npt(fr,*pts[1]); cc=self.npt(fr,*pts[2]); add(a,b,col); add(b,cc,col); add(cc,a,col)
         for q in self.owner.helper_v:
             add(self.npt(fr,q,0),self.npt(fr,q,1),self.owner.helper_color)
         for q in self.owner.helper_h:
@@ -171,15 +171,15 @@ class ImageCanvas(QWidget):
         curve_width=self.owner.guide_width.val()
         if self.owner.show_circle.isChecked():
             col=QColor('#ff5d8f'); col.setAlpha(curve_alpha); pen=QPen(col); pen.setWidthF(curve_width); p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
-            cr=QRectF(fr.left()+fr.width()*.16, fr.top()+fr.height()*.08, fr.width()*.68, fr.height()*.84); p.drawEllipse(cr)
+            cx,cy=self.owner.comp_guides['circle']['center']; rx=self.owner.comp_guides['circle']['rx']; ry=self.owner.comp_guides['circle']['ry']; pc=self.npt(fr,cx,cy); cr=QRectF(pc.x()-fr.width()*rx, pc.y()-fr.height()*ry, fr.width()*rx*2, fr.height()*ry*2); p.drawEllipse(cr)
         if self.owner.show_cshape.isChecked():
             col=QColor('#ff5d8f'); col.setAlpha(curve_alpha); pen=QPen(col); pen.setWidthF(curve_width); p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
-            cr=QRectF(fr.left()+fr.width()*.16, fr.top()+fr.height()*.08, fr.width()*.68, fr.height()*.84)
+            cx,cy=self.owner.comp_guides['cshape']['center']; rx=self.owner.comp_guides['cshape']['rx']; ry=self.owner.comp_guides['cshape']['ry']; pc=self.npt(fr,cx,cy); cr=QRectF(pc.x()-fr.width()*rx, pc.y()-fr.height()*ry, fr.width()*rx*2, fr.height()*ry*2)
             # Open C facing right. Qt angles are in sixteenths of a degree.
             p.drawArc(cr, 55*16, 250*16)
         if self.owner.show_scurve.isChecked():
             col=QColor('#ef476f'); col.setAlpha(curve_alpha); pen=QPen(col); pen.setWidthF(curve_width); p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
-            path=QPainterPath(self.npt(fr,.72,.14)); path.cubicTo(self.npt(fr,.18,.05),self.npt(fr,.18,.46),self.npt(fr,.52,.48)); path.cubicTo(self.npt(fr,.86,.50),self.npt(fr,.83,.91),self.npt(fr,.28,.86)); p.drawPath(path)
+            pts=self.owner.comp_guides['scurve']['points']; path=QPainterPath(self.npt(fr,*pts[0])); path.cubicTo(self.npt(fr,*pts[1]),self.npt(fr,*pts[2]),self.npt(fr,*pts[3])); path.cubicTo(self.npt(fr,*pts[4]),self.npt(fr,*pts[5]),self.npt(fr,*pts[6])); p.drawPath(path)
 
         if self.owner.show_spiral.isChecked():
             c=QColor('#ffd166'); c.setAlpha(round(255*self.owner.guide_alpha.value()/100)); pen=QPen(c); pen.setWidthF(self.owner.guide_width.val()); p.setPen(pen)
@@ -200,6 +200,9 @@ class ImageCanvas(QWidget):
             p.setBrush(fill); p.setPen(Qt.PenStyle.NoPen)
             r=self.owner.point_size.val()/2
             for pt in pts[:120]: p.drawEllipse(QRectF(pt.x()-r,pt.y()-r,r*2,r*2))
+        # Composition-guide edit handles. They appear only in edit mode and only for the selected guide.
+        if self.owner.edit_comp_guides.isChecked() and self.owner.selected_comp_guide:
+            self._draw_comp_handles(p,fr,self.owner.selected_comp_guide)
         # Free helper endpoints. Show only for selected free line or while dragging it.
         sel=self.owner.selected_helper
         if sel and sel[0]=='free' and 0<=sel[1]<len(self.owner.helper_free):
@@ -218,6 +221,75 @@ class ImageCanvas(QWidget):
                 p.setBrush(fc); hp=QPen(QColor('#0f1712')); hp.setWidthF(1.0); p.setPen(hp)
                 for pt in pts: p.drawRect(QRectF(pt.x()-6,pt.y()-6,12,12))
                 for pt in mids: p.drawRect(QRectF(pt.x()-5,pt.y()-5,10,10))
+    def _comp_handle_points(self,fr,name):
+        d=self.owner.comp_guides[name]
+        if name=='radiating': return [self.npt(fr,*d['center'])]
+        if name in ('tunnel','golden_triangle','vshape','double_diagonal','scurve','lshape','pyramid'):
+            return [self.npt(fr,*q) for q in d['points']]
+        if name in ('circle','cshape'):
+            cx,cy=d['center']; rx,ry=d['rx'],d['ry']
+            return [self.npt(fr,cx,cy), self.npt(fr,min(1,cx+rx),cy), self.npt(fr,cx,min(1,cy+ry))]
+        return []
+    def _draw_comp_handles(self,p,fr,name):
+        pts=self._comp_handle_points(fr,name)
+        p.setBrush(QColor('#ffffff')); hp=QPen(QColor('#111820')); hp.setWidthF(1.5); p.setPen(hp)
+        for pt in pts: p.drawEllipse(QRectF(pt.x()-6,pt.y()-6,12,12))
+    def _pos_to_norm(self,pos,fr):
+        if fr.width()<=1 or fr.height()<=1:return (0.,0.)
+        return (max(0.,min(1.,(pos.x()-fr.left())/fr.width())), max(0.,min(1.,(pos.y()-fr.top())/fr.height())))
+    def _comp_visible(self,name):
+        return {
+            'radiating':self.owner.show_radiating,'tunnel':self.owner.show_tunnel,'golden_triangle':self.owner.show_golden_triangle,
+            'circle':self.owner.show_circle,'cshape':self.owner.show_cshape,'vshape':self.owner.show_vshape,
+            'double_diagonal':self.owner.show_double_diagonal,'scurve':self.owner.show_scurve,'lshape':self.owner.show_lshape,'pyramid':self.owner.show_pyramid,
+        }[name].isChecked()
+    def _comp_segments(self,fr,name):
+        d=self.owner.comp_guides[name]; seg=[]
+        def n(q):return self.npt(fr,*q)
+        if name=='radiating':
+            c=n(d['center'])
+            for q in (0,.2,.4,.6,.8,1): seg += [(c,n((q,0))),(c,n((q,1)))]
+            for q in (.2,.4,.6,.8): seg += [(c,n((0,q))),(c,n((1,q)))]
+        elif name=='tunnel':
+            pts=d['points']; q=[n(x) for x in pts]
+            seg += [(q[i],q[(i+1)%4]) for i in range(4)]
+            seg += [(n(o),n(i)) for o,i in zip(((0,0),(1,0),(1,1),(0,1)),pts)]
+        elif name=='golden_triangle':
+            p=d['points']; seg=[(n(p[0]),n(p[1])),(n(p[2]),n(p[3])),(n(p[4]),n(p[5]))]
+        elif name=='vshape':
+            p=d['points']; seg=[(n(p[0]),n(p[1])),(n(p[2]),n(p[1]))]
+        elif name=='double_diagonal':
+            p=d['points']; seg=[(n(p[0]),n(p[1])),(n(p[2]),n(p[3]))]
+        elif name=='lshape':
+            p=d['points']; seg=[(n(p[0]),n(p[1])),(n(p[1]),n(p[2]))]
+        elif name=='pyramid':
+            p=d['points']; seg=[(n(p[0]),n(p[1])),(n(p[1]),n(p[2])),(n(p[2]),n(p[0]))]
+        elif name=='scurve':
+            # Polyline approximation for hit testing.
+            p=d['points']
+            def bez(a,b,c,d,t):
+                u=1-t; return (u**3*a[0]+3*u*u*t*b[0]+3*u*t*t*c[0]+t**3*d[0],u**3*a[1]+3*u*u*t*b[1]+3*u*t*t*c[1]+t**3*d[1])
+            arr=[]
+            for i in range(13): arr.append(n(bez(p[0],p[1],p[2],p[3],i/12)))
+            for i in range(1,13): arr.append(n(bez(p[3],p[4],p[5],p[6],i/12)))
+            seg=[(arr[i],arr[i+1]) for i in range(len(arr)-1)]
+        elif name in ('circle','cshape'):
+            cx,cy=d['center']; rx,ry=d['rx'],d['ry']; arr=[]
+            if name=='circle': angles=[i*math.tau/36 for i in range(37)]
+            else: angles=[math.radians(55 + 250*i/30) for i in range(31)]
+            for a in angles: arr.append(n((cx+rx*math.cos(a),cy-ry*math.sin(a))))
+            seg=[(arr[i],arr[i+1]) for i in range(len(arr)-1)]
+        return seg
+    def _translate_comp(self,name,dx,dy,orig):
+        if name=='radiating':
+            x,y=orig['center']; self.owner.comp_guides[name]['center']=(max(0,min(1,x+dx)),max(0,min(1,y+dy)))
+        elif name in ('circle','cshape'):
+            x,y=orig['center']; rx,ry=orig['rx'],orig['ry'];
+            nx=max(rx,min(1-rx,x+dx)); ny=max(ry,min(1-ry,y+dy)); self.owner.comp_guides[name].update(center=(nx,ny))
+        else:
+            pts=orig['points']; minx=min(x for x,y in pts); maxx=max(x for x,y in pts); miny=min(y for x,y in pts); maxy=max(y for x,y in pts)
+            dx=max(-minx,min(1-maxx,dx)); dy=max(-miny,min(1-maxy,dy)); self.owner.comp_guides[name]['points']=[(x+dx,y+dy) for x,y in pts]
+
     def _frame_clip_path(self):
         from PySide6.QtGui import QPainterPath
         path=QPainterPath(); pts=self.frame_poly()
@@ -243,6 +315,19 @@ class ImageCanvas(QWidget):
             for i in range(4):
                 a,b=pts[i],pts[(i+1)%4]; mid=QPointF((a.x()+b.x())/2,(a.y()+b.y())/2)
                 if math.hypot(pos.x()-mid.x(),pos.y()-mid.y()) < 12: return ('frame_edge',i)
+        # Editable composition guides. Handles have priority, then guide body.
+        if self.owner.edit_comp_guides.isChecked():
+            sel=self.owner.selected_comp_guide
+            if sel and self._comp_visible(sel):
+                for i,pt in enumerate(self._comp_handle_points(fr,sel)):
+                    if math.hypot(pos.x()-pt.x(),pos.y()-pt.y())<12:return ('comp_handle',sel,i)
+            # Prefer current selection, then other visible guides.
+            names=[]
+            if sel: names.append(sel)
+            names += [n for n in ('tunnel','radiating','golden_triangle','circle','cshape','vshape','double_diagonal','scurve','lshape','pyramid') if n!=sel]
+            for name in names:
+                if not self._comp_visible(name): continue
+                if any(self._dist_to_segment(pos,a,b)<tol for a,b in self._comp_segments(fr,name)): return ('comp_line',name)
         # Free line endpoint handles first, then free line body.
         for i,(a,b) in enumerate(self.owner.helper_free):
             pa=self.npt(fr,*a); pb=self.npt(fr,*b)
@@ -266,14 +351,23 @@ class ImageCanvas(QWidget):
             i=hit[1]
             self.setCursor(Qt.CursorShape.SizeVerCursor if i in (0,2) else Qt.CursorShape.SizeHorCursor)
         elif typ=='frame_move': self.setCursor(Qt.CursorShape.SizeAllCursor)
+        elif typ=='comp_handle': self.setCursor(Qt.CursorShape.CrossCursor)
+        elif typ=='comp_line': self.setCursor(Qt.CursorShape.SizeAllCursor)
         elif typ in ('v','h','free_line','free_end'): self.setCursor(Qt.CursorShape.CrossCursor)
         else: self.unsetCursor()
 
     def mousePressEvent(self,e):
         if e.button()!=Qt.MouseButton.LeftButton:return
         hit=self._hit(e.position()); self.drag_item=hit
+        if not hit and self.owner.edit_comp_guides.isChecked():
+            self.owner.selected_comp_guide=None; self.owner.reset_comp_btn.setEnabled(False); self.update()
         if hit:
             typ=hit[0]
+            if typ in ('comp_handle','comp_line'):
+                self.owner.selected_comp_guide=hit[1]; self.owner.reset_comp_btn.setEnabled(True); self.owner.selected_helper=None; self.owner.update_helper_buttons(); self.update()
+                if typ=='comp_line':
+                    import copy
+                    self._drag_start=e.position(); self._comp_drag_orig=copy.deepcopy(self.owner.comp_guides[hit[1]])
             if typ in ('v','h','free_line','free_end'):
                 kind='free' if typ.startswith('free') else typ
                 self.owner.selected_helper=(kind,hit[1]); self.owner.update_helper_buttons(); self.update()
@@ -285,7 +379,19 @@ class ImageCanvas(QWidget):
         if not self.drag_item:
             self._update_cursor(e.position()); return
         fr=self.frame_rect(); typ=self.drag_item[0]; pos=e.position()
-        if typ=='v' and self.image_rect.width()>1:
+        if typ=='comp_handle':
+            name,i=self.drag_item[1],self.drag_item[2]; d=self.owner.comp_guides[name]; nx,ny=self._pos_to_norm(pos,fr)
+            if name=='radiating': d['center']=(nx,ny)
+            elif name in ('circle','cshape'):
+                cx,cy=d['center']
+                if i==0: d['center']=(nx,ny)
+                elif i==1: d['rx']=max(.03,min(.5,abs(nx-cx)))
+                elif i==2: d['ry']=max(.03,min(.5,abs(ny-cy)))
+            else:
+                pts=list(d['points']); pts[i]=(nx,ny); d['points']=pts
+        elif typ=='comp_line':
+            name=self.drag_item[1]; dx=(pos.x()-self._drag_start.x())/max(1,fr.width()); dy=(pos.y()-self._drag_start.y())/max(1,fr.height()); self._translate_comp(name,dx,dy,self._comp_drag_orig)
+        elif typ=='v' and self.image_rect.width()>1:
             i=self.drag_item[1]; self.owner.helper_v[i]=max(0,min(1,(pos.x()-self.image_rect.left())/self.image_rect.width()))
         elif typ=='h' and self.image_rect.height()>1:
             i=self.drag_item[1]; self.owner.helper_h[i]=max(0,min(1,(pos.y()-self.image_rect.top())/self.image_rect.height()))
@@ -334,18 +440,31 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.1'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.2'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.helper_v=[]; self.helper_h=[]; self.helper_free=[]; self.selected_helper=None
+        self.selected_comp_guide=None
+        self.comp_guides={
+            'radiating': {'center': (.5,.5)},
+            'tunnel': {'points': [( .18,.18),(.82,.18),(.82,.82),(.18,.82)]},
+            'golden_triangle': {'points': [(0.,1.),(1.,0.),(0.,0.),(.42,1.),(.62,0.),(1.,1.)]},
+            'circle': {'center': (.5,.5), 'rx': .34, 'ry': .42},
+            'cshape': {'center': (.5,.5), 'rx': .34, 'ry': .42},
+            'vshape': {'points': [(.18,0.),(.5,1.),(.82,0.)]},
+            'double_diagonal': {'points': [(0.,.15),(.68,1.),(0.,.62),(1.,.08)]},
+            'scurve': {'points': [(.72,.14),(.18,.05),(.18,.46),(.52,.48),(.86,.50),(.83,.91),(.28,.86)]},
+            'lshape': {'points': [(.20,.14),(.20,.84),(.82,.84)]},
+            'pyramid': {'points': [(.5,.12),(.14,.88),(.86,.88)]},
+        }
         self.helper_color='#36d1ff'; self.point_color='#ff3838'; self.frame_color='#20f26b'
-        self._build_ui(); self._style(); self.statusBar().showMessage('V5.1 — 構図ガイド拡張版')
+        self._build_ui(); self._style(); self.statusBar().showMessage('V5.2 — 可動構図ガイド版')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
         root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.1 / 構図ガイド拡張版'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.2 / 可動構図ガイド版'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -367,7 +486,12 @@ class MovieShotAnalyzer(QMainWindow):
         self.show_lshape=QCheckBox('L字構図')
         self.show_pyramid=QCheckBox('ピラミッド構図')
         for w in (self.show_radiating,self.show_tunnel,self.show_golden_triangle,self.show_circle,self.show_cshape,self.show_vshape,self.show_double_diagonal,self.show_scurve,self.show_lshape,self.show_pyramid):
-            w.toggled.connect(self.refresh); c.addWidget(w)
+            w.toggled.connect(self.comp_guide_visibility_changed); c.addWidget(w)
+        self.edit_comp_guides=QCheckBox('追加ガイドを編集（クリックで選択）')
+        self.edit_comp_guides.toggled.connect(self.comp_edit_toggled); c.addWidget(self.edit_comp_guides)
+        self.reset_comp_btn=QPushButton('選択中ガイドを初期位置へ戻す'); self.reset_comp_btn.setEnabled(False); self.reset_comp_btn.clicked.connect(self.reset_selected_comp_guide); c.addWidget(self.reset_comp_btn)
+        ednote=QLabel('編集ONのときだけ、選択したガイドに○ハンドルを表示します。線をドラッグすると全体移動、○をドラッグすると形を調整できます。')
+        ednote.setObjectName('note'); ednote.setWordWrap(True); c.addWidget(ednote)
         kindnote=QLabel('※ Balance / Unbalanced などは固定線ではなく、後の「画像を見て判断する構図タイプ」解析に入れる予定です。')
         kindnote.setObjectName('note'); kindnote.setWordWrap(True); c.addWidget(kindnote)
 
@@ -452,6 +576,30 @@ class MovieShotAnalyzer(QMainWindow):
         if self.current_index+1<len(self.paths):self.current_index+=1;self.load_current()
     def _update_nav(self): self.prev_button.setEnabled(self.current_index>0); self.next_button.setEnabled(0<=self.current_index<len(self.paths)-1)
     def refresh(self): self.canvas.update()
+
+    def comp_edit_toggled(self,on):
+        if not on:
+            self.selected_comp_guide=None; self.reset_comp_btn.setEnabled(False)
+        self.refresh()
+    def comp_guide_visibility_changed(self,on):
+        sender=self.sender()
+        mapping={self.show_radiating:'radiating',self.show_tunnel:'tunnel',self.show_golden_triangle:'golden_triangle',self.show_circle:'circle',self.show_cshape:'cshape',self.show_vshape:'vshape',self.show_double_diagonal:'double_diagonal',self.show_scurve:'scurve',self.show_lshape:'lshape',self.show_pyramid:'pyramid'}
+        name=mapping.get(sender)
+        if not on and self.selected_comp_guide==name:
+            self.selected_comp_guide=None; self.reset_comp_btn.setEnabled(False)
+        self.refresh()
+    def reset_selected_comp_guide(self):
+        name=self.selected_comp_guide
+        defaults={
+            'radiating': {'center': (.5,.5)}, 'tunnel': {'points': [(.18,.18),(.82,.18),(.82,.82),(.18,.82)]},
+            'golden_triangle': {'points': [(0.,1.),(1.,0.),(0.,0.),(.42,1.),(.62,0.),(1.,1.)]},
+            'circle': {'center': (.5,.5), 'rx': .34, 'ry': .42}, 'cshape': {'center': (.5,.5), 'rx': .34, 'ry': .42},
+            'vshape': {'points': [(.18,0.),(.5,1.),(.82,0.)]}, 'double_diagonal': {'points': [(0.,.15),(.68,1.),(0.,.62),(1.,.08)]},
+            'scurve': {'points': [(.72,.14),(.18,.05),(.18,.46),(.52,.48),(.86,.50),(.83,.91),(.28,.86)]},
+            'lshape': {'points': [(.20,.14),(.20,.84),(.82,.84)]}, 'pyramid': {'points': [(.5,.12),(.14,.88),(.86,.88)]},
+        }
+        if name:
+            import copy; self.comp_guides[name]=copy.deepcopy(defaults[name]); self.refresh()
 
     def add_vertical(self):
         if len(self.helper_v)>=6:self.statusBar().showMessage('縦補助線は最大6本です',3000); return
