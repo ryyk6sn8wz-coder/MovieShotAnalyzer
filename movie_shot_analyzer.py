@@ -97,23 +97,25 @@ class ImageCanvas(QWidget):
     def _collect_lines(self,fr:QRectF):
         """Visible straight guides. Tuples: (a,b,color). Spiral excluded."""
         lines=[]
-        def add(a,b,c): lines.append((a,b,c))
+        # Fourth item marks whether a line belongs to a basic guide.
+        # Intersection circles are calculated only from basic guides.
+        def add(a,b,c,basic=False): lines.append((a,b,c,basic))
         if self.owner.show_thirds.isChecked():
             for q in (1/3,2/3):
-                add(self.npt(fr,q,0),self.npt(fr,q,1),'#ff4d4f'); add(self.npt(fr,0,q),self.npt(fr,1,q),'#ff4d4f')
+                add(self.npt(fr,q,0),self.npt(fr,q,1),'#ff4d4f',True); add(self.npt(fr,0,q),self.npt(fr,1,q),'#ff4d4f',True)
         if self.owner.show_cross.isChecked():
-            add(self.npt(fr,.5,0),self.npt(fr,.5,1),'#44b5ff'); add(self.npt(fr,0,.5),self.npt(fr,1,.5),'#44b5ff')
+            add(self.npt(fr,.5,0),self.npt(fr,.5,1),'#44b5ff',True); add(self.npt(fr,0,.5),self.npt(fr,1,.5),'#44b5ff',True)
         if self.owner.show_golden.isChecked():
             for q in (.381966,.618034):
-                add(self.npt(fr,q,0),self.npt(fr,q,1),'#f5c542'); add(self.npt(fr,0,q),self.npt(fr,1,q),'#f5c542')
+                add(self.npt(fr,q,0),self.npt(fr,q,1),'#f5c542',True); add(self.npt(fr,0,q),self.npt(fr,1,q),'#f5c542',True)
         if self.owner.show_diagonal.isChecked():
-            add(self.npt(fr,0,0),self.npt(fr,1,1),'#b77cff'); add(self.npt(fr,1,0),self.npt(fr,0,1),'#b77cff')
+            add(self.npt(fr,0,0),self.npt(fr,1,1),'#b77cff',True); add(self.npt(fr,1,0),self.npt(fr,0,1),'#b77cff',True)
         if self.owner.show_triangle.isChecked():
-            add(self.npt(fr,0,1),self.npt(fr,1,0),'#ff9f43')
-            add(self.npt(fr,0,0),self.npt(fr,1,.72),'#ff9f43')
-            add(self.npt(fr,1,1),self.npt(fr,0,.28),'#ff9f43')
+            add(self.npt(fr,0,1),self.npt(fr,1,0),'#ff9f43',True)
+            add(self.npt(fr,0,0),self.npt(fr,1,.72),'#ff9f43',True)
+            add(self.npt(fr,1,1),self.npt(fr,0,.28),'#ff9f43',True)
         if self.owner.show_symmetry.isChecked():
-            add(self.npt(fr,.5,0),self.npt(fr,.5,1),'#64d8cb')
+            add(self.npt(fr,.5,0),self.npt(fr,.5,1),'#64d8cb',True)
         if self.owner.show_radiating.isChecked():
             # A clean radial fan: all rays meet at an editable center.
             cx,cy=self.owner.comp_guides['radiating']['center']; c=self.npt(fr,cx,cy)
@@ -161,7 +163,7 @@ class ImageCanvas(QWidget):
         p.drawPixmap(self.image_rect.toRect(),self.pixmap)
         fr=self.frame_rect(); frame_poly=QPolygonF(self.frame_poly()); p.save(); p.setClipPath(self._frame_clip_path())
         lines=self._collect_lines(fr)
-        for a,b,color in lines:
+        for a,b,color,*_meta in lines:
             pen=self._guide_pen(color)
             if color=='#64d8cb' and self.owner.show_symmetry.isChecked(): pen.setStyle(Qt.PenStyle.DashLine)
             p.setPen(pen); p.drawLine(a,b)
@@ -189,9 +191,13 @@ class ImageCanvas(QWidget):
             p.drawPolyline(QPolygonF(pts))
         if self.owner.show_points.isChecked():
             pts=[]
-            for i in range(len(lines)):
-                for j in range(i+1,len(lines)):
-                    pt=seg_intersection(lines[i][0],lines[i][1],lines[j][0],lines[j][1])
+            # Basic guides keep their filled intersection circles. Additional
+            # composition guides never create normal circles; their white
+            # handles appear only while that guide is selected for editing.
+            basic_lines=[ln for ln in lines if len(ln)>3 and ln[3]]
+            for i in range(len(basic_lines)):
+                for j in range(i+1,len(basic_lines)):
+                    pt=seg_intersection(basic_lines[i][0],basic_lines[i][1],basic_lines[j][0],basic_lines[j][1])
                     if pt is None: continue
                     # de-duplicate near-identical crossings
                     if any((pt.x()-q.x())**2+(pt.y()-q.y())**2 < 16 for q in pts): continue
