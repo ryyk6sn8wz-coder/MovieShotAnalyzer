@@ -6,7 +6,7 @@ from PySide6.QtCore import QRectF, Qt, QPointF
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QFileDialog, QGridLayout, QHBoxLayout,
-    QLabel, QMainWindow, QPushButton, QScrollArea, QSlider, QSpinBox,
+    QLabel, QMainWindow, QPushButton, QScrollArea, QSlider, QDoubleSpinBox,
     QVBoxLayout, QWidget
 )
 
@@ -53,6 +53,21 @@ def seg_intersection(a:QPointF,b:QPointF,c:QPointF,d:QPointF):
         return QPointF(x1+t*(x2-x1),y1+t*(y2-y1))
     return None
 
+class StepControl(QWidget):
+    """Minus/value/plus control with reliable 0.5 steps on Windows."""
+    def __init__(self, minimum, maximum, value, step=0.5, decimals=1, parent=None):
+        super().__init__(parent)
+        lay=QHBoxLayout(self); lay.setContentsMargins(0,0,0,0); lay.setSpacing(4)
+        self.minus=QPushButton('−'); self.minus.setFixedWidth(34)
+        self.value=QDoubleSpinBox(); self.value.setRange(minimum,maximum); self.value.setDecimals(decimals); self.value.setSingleStep(step); self.value.setValue(value)
+        self.value.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
+        self.plus=QPushButton('+'); self.plus.setFixedWidth(34)
+        lay.addWidget(self.minus); lay.addWidget(self.value,1); lay.addWidget(self.plus)
+        self.minus.clicked.connect(lambda: self.value.setValue(max(minimum,self.value.value()-step)))
+        self.plus.clicked.connect(lambda: self.value.setValue(min(maximum,self.value.value()+step)))
+    def val(self): return float(self.value.value())
+    def setValue(self,v): self.value.setValue(v)
+
 class ImageCanvas(QWidget):
     def __init__(self,owner):
         super().__init__(); self.owner=owner; self.pixmap=None; self.image_rect=QRectF(); self.drag_item=None
@@ -61,14 +76,24 @@ class ImageCanvas(QWidget):
         if e.mimeData().hasUrls():e.acceptProposedAction()
     def dropEvent(self,e):
         self.owner.open_paths([Path(u.toLocalFile()) for u in e.mimeData().urls() if u.isLocalFile()]); e.acceptProposedAction()
+    def frame_poly(self):
+        r=self.image_rect
+        pts=[]
+        for x,y in self.owner.frame_quad:
+            pts.append(QPointF(r.left()+r.width()*x, r.top()+r.height()*y))
+        return pts
     def frame_rect(self):
-        r=self.image_rect; l,t,rr,b=self.owner.frame
-        return QRectF(r.left()+r.width()*l,r.top()+r.height()*t,r.width()*(rr-l),r.height()*(b-t))
-    def npt(self,fr:QRectF,x:float,y:float):
-        return QPointF(fr.left()+fr.width()*x,fr.top()+fr.height()*y)
+        pts=self.frame_poly(); xs=[p.x() for p in pts]; ys=[p.y() for p in pts]
+        return QRectF(min(xs),min(ys),max(xs)-min(xs),max(ys)-min(ys))
+    def npt(self,fr_unused,x:float,y:float):
+        # Bilinear interpolation inside the editable four-corner frame.
+        tl,tr,br,bl=self.frame_poly()
+        top=QPointF(tl.x()*(1-x)+tr.x()*x, tl.y()*(1-x)+tr.y()*x)
+        bot=QPointF(bl.x()*(1-x)+br.x()*x, bl.y()*(1-x)+br.y()*x)
+        return QPointF(top.x()*(1-y)+bot.x()*y, top.y()*(1-y)+bot.y()*y)
     def _guide_pen(self,color):
-        c=QColor(color); c.setAlpha(self.owner.guide_alpha.value())
-        q=QPen(c); q.setWidth(self.owner.guide_width.value()); q.setStyle(Qt.PenStyle.SolidLine); return q
+        c=QColor(color); c.setAlpha(round(255*self.owner.guide_alpha.value()/100))
+        q=QPen(c); q.setWidthF(self.owner.guide_width.val()); q.setStyle(Qt.PenStyle.SolidLine); return q
     def _collect_lines(self,fr:QRectF):
         """Visible straight guides. Tuples: (a,b,color). Spiral excluded."""
         lines=[]
@@ -82,11 +107,11 @@ class ImageCanvas(QWidget):
             for q in (.381966,.618034):
                 add(self.npt(fr,q,0),self.npt(fr,q,1),'#f5c542'); add(self.npt(fr,0,q),self.npt(fr,1,q),'#f5c542')
         if self.owner.show_diagonal.isChecked():
-            add(fr.topLeft(),fr.bottomRight(),'#b77cff'); add(fr.topRight(),fr.bottomLeft(),'#b77cff')
+            add(self.npt(fr,0,0),self.npt(fr,1,1),'#b77cff'); add(self.npt(fr,1,0),self.npt(fr,0,1),'#b77cff')
         if self.owner.show_triangle.isChecked():
-            add(fr.bottomLeft(),fr.topRight(),'#ff9f43')
-            add(fr.topLeft(),self.npt(fr,1,.72),'#ff9f43')
-            add(fr.bottomRight(),self.npt(fr,0,.28),'#ff9f43')
+            add(self.npt(fr,0,1),self.npt(fr,1,0),'#ff9f43')
+            add(self.npt(fr,0,0),self.npt(fr,1,.72),'#ff9f43')
+            add(self.npt(fr,1,1),self.npt(fr,0,.28),'#ff9f43')
         if self.owner.show_symmetry.isChecked():
             add(self.npt(fr,.5,0),self.npt(fr,.5,1),'#64d8cb')
         for q in self.owner.helper_v:
@@ -103,14 +128,14 @@ class ImageCanvas(QWidget):
         av=self.rect().adjusted(18,18,-18,-18); sc=self.pixmap.size().scaled(av.size(),Qt.AspectRatioMode.KeepAspectRatio)
         x=av.left()+(av.width()-sc.width())/2; y=av.top()+(av.height()-sc.height())/2; self.image_rect=QRectF(x,y,sc.width(),sc.height())
         p.drawPixmap(self.image_rect.toRect(),self.pixmap)
-        fr=self.frame_rect(); p.save(); p.setClipRect(fr)
+        fr=self.frame_rect(); frame_poly=QPolygonF(self.frame_poly()); p.save(); p.setClipPath(self._frame_clip_path())
         lines=self._collect_lines(fr)
         for a,b,color in lines:
             pen=self._guide_pen(color)
             if color=='#64d8cb' and self.owner.show_symmetry.isChecked(): pen.setStyle(Qt.PenStyle.DashLine)
             p.setPen(pen); p.drawLine(a,b)
         if self.owner.show_spiral.isChecked():
-            c=QColor('#ffd166'); c.setAlpha(self.owner.guide_alpha.value()); pen=QPen(c); pen.setWidth(self.owner.guide_width.value()); p.setPen(pen)
+            c=QColor('#ffd166'); c.setAlpha(round(255*self.owner.guide_alpha.value()/100)); pen=QPen(c); pen.setWidthF(self.owner.guide_width.val()); p.setPen(pen)
             pts=[]; cx=fr.left()+fr.width()*.382; cy=fr.top()+fr.height()*.618; maxr=min(fr.width(),fr.height())*.62
             for i in range(180):
                 th=i/179*math.pi*3.2; rad=maxr*math.exp(-.17*th); pts.append(QPointF(cx+rad*math.cos(th),cy-rad*math.sin(th)))
@@ -124,10 +149,9 @@ class ImageCanvas(QWidget):
                     # de-duplicate near-identical crossings
                     if any((pt.x()-q.x())**2+(pt.y()-q.y())**2 < 16 for q in pts): continue
                     pts.append(pt)
-            fill=QColor(self.owner.point_color); fill.setAlpha(self.owner.point_alpha.value())
-            outline=QColor(self.owner.point_outline_color); outline.setAlpha(self.owner.point_alpha.value())
-            p.setBrush(fill); pen=QPen(outline); pen.setWidth(self.owner.point_outline_width.value()); p.setPen(pen)
-            r=self.owner.point_size.value()/2
+            fill=QColor(self.owner.point_color); fill.setAlpha(round(255*self.owner.point_alpha.value()/100))
+            p.setBrush(fill); p.setPen(Qt.PenStyle.NoPen)
+            r=self.owner.point_size.val()/2
             for pt in pts[:120]: p.drawEllipse(QRectF(pt.x()-r,pt.y()-r,r*2,r*2))
         # Free helper endpoints. Show only for selected free line or while dragging it.
         sel=self.owner.selected_helper
@@ -137,7 +161,24 @@ class ImageCanvas(QWidget):
             for pt in (pa,pb): p.drawEllipse(QRectF(pt.x()-6,pt.y()-6,12,12))
         p.restore()
         if self.owner.show_frame.isChecked():
-            q=QPen(QColor('#7ee787'));q.setWidth(2);q.setStyle(Qt.PenStyle.DashLine);p.setPen(q);p.setBrush(Qt.BrushStyle.NoBrush);p.drawRect(fr)
+            poly=QPolygonF(self.frame_poly())
+            fc=QColor(self.owner.frame_color); fc.setAlpha(round(255*self.owner.frame_alpha.value()/100))
+            q=QPen(fc); q.setWidthF(self.owner.frame_width.val()); q.setStyle(Qt.PenStyle.SolidLine)
+            p.setPen(q); p.setBrush(Qt.BrushStyle.NoBrush); p.drawPolygon(poly)
+            if self.owner.manual_frame.isChecked():
+                # Photoshop-like transform handles: four corners + four side midpoints.
+                pts=self.frame_poly(); mids=[QPointF((pts[i].x()+pts[(i+1)%4].x())/2,(pts[i].y()+pts[(i+1)%4].y())/2) for i in range(4)]
+                p.setBrush(fc); hp=QPen(QColor('#0f1712')); hp.setWidthF(1.0); p.setPen(hp)
+                for pt in pts: p.drawRect(QRectF(pt.x()-6,pt.y()-6,12,12))
+                for pt in mids: p.drawRect(QRectF(pt.x()-5,pt.y()-5,10,10))
+    def _frame_clip_path(self):
+        from PySide6.QtGui import QPainterPath
+        path=QPainterPath(); pts=self.frame_poly()
+        if pts:
+            path.moveTo(pts[0])
+            for pt in pts[1:]: path.lineTo(pt)
+            path.closeSubpath()
+        return path
     def _dist_to_segment(self,p,a,b):
         vx=b.x()-a.x(); vy=b.y()-a.y(); wx=p.x()-a.x(); wy=p.y()-a.y(); vv=vx*vx+vy*vy
         if vv<=1e-8:return math.hypot(wx,wy)
@@ -146,11 +187,15 @@ class ImageCanvas(QWidget):
     def _hit(self,pos):
         if not self.pixmap:return None
         fr=self.frame_rect(); tol=10
+        # Transform handles have top priority, but the frame interior is checked last
+        # so helper lines remain directly draggable even while free-transform is enabled.
         if self.owner.manual_frame.isChecked():
-            for name,val in [('L',fr.left()),('R',fr.right())]:
-                if abs(pos.x()-val)<tol and fr.top()-tol<=pos.y()<=fr.bottom()+tol:return ('frame',name)
-            for name,val in [('T',fr.top()),('B',fr.bottom())]:
-                if abs(pos.y()-val)<tol and fr.left()-tol<=pos.x()<=fr.right()+tol:return ('frame',name)
+            pts=self.frame_poly()
+            for i,pt in enumerate(pts):
+                if math.hypot(pos.x()-pt.x(),pos.y()-pt.y()) < 13: return ('frame_corner',i)
+            for i in range(4):
+                a,b=pts[i],pts[(i+1)%4]; mid=QPointF((a.x()+b.x())/2,(a.y()+b.y())/2)
+                if math.hypot(pos.x()-mid.x(),pos.y()-mid.y()) < 12: return ('frame_edge',i)
         # Free line endpoint handles first, then free line body.
         for i,(a,b) in enumerate(self.owner.helper_free):
             pa=self.npt(fr,*a); pb=self.npt(fr,*b)
@@ -158,10 +203,25 @@ class ImageCanvas(QWidget):
             if math.hypot(pos.x()-pb.x(),pos.y()-pb.y())<12:return ('free_end',i,1)
             if self._dist_to_segment(pos,pa,pb)<tol:return ('free_line',i)
         for i,q in enumerate(self.owner.helper_v):
-            if abs(pos.x()-(fr.left()+fr.width()*q))<tol:return ('v',i)
+            if self._dist_to_segment(pos,self.npt(fr,q,0),self.npt(fr,q,1))<tol:return ('v',i)
         for i,q in enumerate(self.owner.helper_h):
-            if abs(pos.y()-(fr.top()+fr.height()*q))<tol:return ('h',i)
+            if self._dist_to_segment(pos,self.npt(fr,0,q),self.npt(fr,1,q))<tol:return ('h',i)
+        if self.owner.manual_frame.isChecked() and self._frame_clip_path().contains(pos):
+            return ('frame_move',)
         return None
+    def _update_cursor(self,pos):
+        hit=self._hit(pos)
+        if not hit:
+            self.unsetCursor(); return
+        typ=hit[0]
+        if typ=='frame_corner': self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        elif typ=='frame_edge':
+            i=hit[1]
+            self.setCursor(Qt.CursorShape.SizeVerCursor if i in (0,2) else Qt.CursorShape.SizeHorCursor)
+        elif typ=='frame_move': self.setCursor(Qt.CursorShape.SizeAllCursor)
+        elif typ in ('v','h','free_line','free_end'): self.setCursor(Qt.CursorShape.CrossCursor)
+        else: self.unsetCursor()
+
     def mousePressEvent(self,e):
         if e.button()!=Qt.MouseButton.LeftButton:return
         hit=self._hit(e.position()); self.drag_item=hit
@@ -172,13 +232,16 @@ class ImageCanvas(QWidget):
                 self.owner.selected_helper=(kind,hit[1]); self.owner.update_helper_buttons(); self.update()
             if typ=='free_line':
                 fr=self.frame_rect(); self._drag_start=e.position(); self._drag_orig=self.owner.helper_free[hit[1]]
+            elif typ in ('frame_edge','frame_move'):
+                self._drag_start=e.position(); self._frame_drag_orig=[tuple(q) for q in self.owner.frame_quad]
     def mouseMoveEvent(self,e):
-        if not self.drag_item:return
+        if not self.drag_item:
+            self._update_cursor(e.position()); return
         fr=self.frame_rect(); typ=self.drag_item[0]; pos=e.position()
-        if typ=='v' and fr.width()>1:
-            i=self.drag_item[1]; self.owner.helper_v[i]=max(0,min(1,(pos.x()-fr.left())/fr.width()))
-        elif typ=='h' and fr.height()>1:
-            i=self.drag_item[1]; self.owner.helper_h[i]=max(0,min(1,(pos.y()-fr.top())/fr.height()))
+        if typ=='v' and self.image_rect.width()>1:
+            i=self.drag_item[1]; self.owner.helper_v[i]=max(0,min(1,(pos.x()-self.image_rect.left())/self.image_rect.width()))
+        elif typ=='h' and self.image_rect.height()>1:
+            i=self.drag_item[1]; self.owner.helper_h[i]=max(0,min(1,(pos.y()-self.image_rect.top())/self.image_rect.height()))
         elif typ=='free_end' and fr.width()>1 and fr.height()>1:
             i,end=self.drag_item[1],self.drag_item[2]; a,b=self.owner.helper_free[i]
             np=(max(0,min(1,(pos.x()-fr.left())/fr.width())),max(0,min(1,(pos.y()-fr.top())/fr.height())))
@@ -189,30 +252,53 @@ class ImageCanvas(QWidget):
             # Clamp translation so both endpoints stay within frame.
             dx=max(-min(a[0],b[0]),min(1-max(a[0],b[0]),dx)); dy=max(-min(a[1],b[1]),min(1-max(a[1],b[1]),dy))
             self.owner.helper_free[i]=((a[0]+dx,a[1]+dy),(b[0]+dx,b[1]+dy))
-        elif typ=='frame':
-            idx=self.drag_item[1]; r=self.image_rect; l,t,rr,b=self.owner.frame
-            if idx=='L':l=max(0,min(rr-.03,(pos.x()-r.left())/r.width()))
-            elif idx=='R':rr=min(1,max(l+.03,(pos.x()-r.left())/r.width()))
-            elif idx=='T':t=max(0,min(b-.03,(pos.y()-r.top())/r.height()))
-            elif idx=='B':b=min(1,max(t+.03,(pos.y()-r.top())/r.height()))
-            self.owner.frame=(l,t,rr,b)
+        elif typ=='frame_corner':
+            i=self.drag_item[1]; r=self.image_rect
+            nx=max(0,min(1,(pos.x()-r.left())/max(1,r.width()))); ny=max(0,min(1,(pos.y()-r.top())/max(1,r.height())))
+            q=list(self.owner.frame_quad); q[i]=(nx,ny); self.owner.frame_quad=q
+        elif typ=='frame_edge':
+            i=self.drag_item[1]; r=self.image_rect; orig=self._frame_drag_orig
+            # Photoshop-like side handle: move the selected side only in its perpendicular direction.
+            aidx,bidx=((0,1),(1,2),(2,3),(3,0))[i]
+            ax,ay=orig[aidx]; bx,by=orig[bidx]
+            vx=(bx-ax)*r.width(); vy=(by-ay)*r.height(); ln=max(1e-8,math.hypot(vx,vy))
+            nx=-vy/ln; ny=vx/ln
+            mdx=pos.x()-self._drag_start.x(); mdy=pos.y()-self._drag_start.y()
+            amount=mdx*nx+mdy*ny
+            dx=(amount*nx)/max(1,r.width()); dy=(amount*ny)/max(1,r.height())
+            q=[list(x) for x in orig]
+            # Clamp the common translation so both endpoints remain inside the image.
+            lo_dx=max(-orig[aidx][0],-orig[bidx][0]); hi_dx=min(1-orig[aidx][0],1-orig[bidx][0])
+            lo_dy=max(-orig[aidx][1],-orig[bidx][1]); hi_dy=min(1-orig[aidx][1],1-orig[bidx][1])
+            dx=max(lo_dx,min(hi_dx,dx)); dy=max(lo_dy,min(hi_dy,dy))
+            for j in (aidx,bidx):
+                q[j][0]=orig[j][0]+dx; q[j][1]=orig[j][1]+dy
+            self.owner.frame_quad=[tuple(x) for x in q]
+        elif typ=='frame_move':
+            r=self.image_rect; orig=self._frame_drag_orig
+            dx=(pos.x()-self._drag_start.x())/max(1,r.width()); dy=(pos.y()-self._drag_start.y())/max(1,r.height())
+            minx=min(q[0] for q in orig); maxx=max(q[0] for q in orig); miny=min(q[1] for q in orig); maxy=max(q[1] for q in orig)
+            dx=max(-minx,min(1-maxx,dx)); dy=max(-miny,min(1-maxy,dy))
+            self.owner.frame_quad=[(q[0]+dx,q[1]+dy) for q in orig]
         self.update()
-    def mouseReleaseEvent(self,e): self.drag_item=None
+    def mouseReleaseEvent(self,e):
+        if self.drag_item and self.drag_item[0].startswith('frame_'): self.owner.save_frame()
+        self.drag_item=None
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V4 Analyzer 2'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
-        self.paths=[]; self.current_index=-1; self.original=None; self.frame=(0.,0.,1.,1.); self.frames={}
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.helper_v=[]; self.helper_h=[]; self.helper_free=[]; self.selected_helper=None
-        self.helper_color='#36d1ff'; self.point_color='#ffd400'; self.point_outline_color='#1a1a1a'
-        self._build_ui(); self._style(); self.statusBar().showMessage('V4 Analyzer 2 — 補助線・交点表示版')
+        self.helper_color='#36d1ff'; self.point_color='#ff3838'; self.frame_color='#20f26b'
+        self._build_ui(); self._style(); self.statusBar().showMessage('V5 — 自由変形フレーム操作版')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
         root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V4 Analyzer 2 / 構図・補助線版'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5 / 構図・自由変形フレーム版'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -228,17 +314,20 @@ class MovieShotAnalyzer(QMainWindow):
         hint=QLabel('縦・横線は線自体をドラッグ。自由線は両端の○で角度変更、線自体のドラッグで平行移動。\n三分割の赤線は固定です。'); hint.setObjectName('note'); hint.setWordWrap(True); c.addWidget(hint)
 
         self.section(c,'ガイド表示')
-        grid=QGridLayout(); grid.addWidget(QLabel('線の太さ'),0,0); self.guide_width=QSpinBox(); self.guide_width.setRange(1,10); self.guide_width.setValue(2); self.guide_width.valueChanged.connect(self.refresh); grid.addWidget(self.guide_width,0,1)
-        grid.addWidget(QLabel('線の透明度'),1,0); self.guide_alpha=QSlider(Qt.Orientation.Horizontal); self.guide_alpha.setRange(40,255); self.guide_alpha.setValue(230); self.guide_alpha.valueChanged.connect(self.refresh); grid.addWidget(self.guide_alpha,1,1); c.addLayout(grid)
+        grid=QGridLayout(); grid.addWidget(QLabel('線の太さ'),0,0); self.guide_width=StepControl(0.5,10.0,1.5,0.5); self.guide_width.value.valueChanged.connect(self.refresh); grid.addWidget(self.guide_width,0,1)
+        grid.addWidget(QLabel('線の透明度'),1,0); self.guide_alpha=QSlider(Qt.Orientation.Horizontal); self.guide_alpha.setRange(0,100); self.guide_alpha.setValue(90); self.guide_alpha.valueChanged.connect(self.refresh); grid.addWidget(self.guide_alpha,1,1); self.guide_alpha_label=QLabel('90%'); self.guide_alpha_label.setFixedWidth(38); self.guide_alpha.valueChanged.connect(lambda v:self.guide_alpha_label.setText(f'{v}%')); grid.addWidget(self.guide_alpha_label,1,2); c.addLayout(grid)
         self.show_points=QCheckBox('交点に塗りつぶし○を表示'); self.show_points.setChecked(True); self.show_points.toggled.connect(self.refresh); c.addWidget(self.show_points)
-        grid=QGridLayout(); grid.addWidget(QLabel('○サイズ'),0,0); self.point_size=QSpinBox(); self.point_size.setRange(4,30); self.point_size.setValue(10); self.point_size.valueChanged.connect(self.refresh); grid.addWidget(self.point_size,0,1)
-        grid.addWidget(QLabel('○外周の太さ'),1,0); self.point_outline_width=QSpinBox(); self.point_outline_width.setRange(0,8); self.point_outline_width.setValue(2); self.point_outline_width.valueChanged.connect(self.refresh); grid.addWidget(self.point_outline_width,1,1); c.addLayout(grid)
-        row=QHBoxLayout(); pc=QPushButton('○の色'); pc.clicked.connect(self.choose_point_color); po=QPushButton('○の外周色'); po.clicked.connect(self.choose_point_outline_color); row.addWidget(pc); row.addWidget(po); c.addLayout(row)
-        row=QHBoxLayout(); row.addWidget(QLabel('○透明度')); self.point_alpha=QSlider(Qt.Orientation.Horizontal); self.point_alpha.setRange(40,255); self.point_alpha.setValue(255); self.point_alpha.valueChanged.connect(self.refresh); row.addWidget(self.point_alpha,1); c.addLayout(row)
+        grid=QGridLayout(); grid.addWidget(QLabel('○サイズ'),0,0); self.point_size=StepControl(2.0,30.0,8.0,0.5); self.point_size.value.valueChanged.connect(self.refresh); grid.addWidget(self.point_size,0,1); c.addLayout(grid)
+        row=QHBoxLayout(); pc=QPushButton('○の色'); pc.clicked.connect(self.choose_point_color); row.addWidget(pc); row.addStretch(1); c.addLayout(row)
+        row=QHBoxLayout(); row.addWidget(QLabel('○透明度')); self.point_alpha=QSlider(Qt.Orientation.Horizontal); self.point_alpha.setRange(0,100); self.point_alpha.setValue(100); self.point_alpha.valueChanged.connect(self.refresh); row.addWidget(self.point_alpha,1); self.point_alpha_label=QLabel('100%'); self.point_alpha_label.setFixedWidth(42); self.point_alpha.valueChanged.connect(lambda v:self.point_alpha_label.setText(f'{v}%')); row.addWidget(self.point_alpha_label); c.addLayout(row)
 
         self.section(c,'実映像フレーム')
-        self.show_frame=QCheckBox('フレーム枠を表示'); self.show_frame.setChecked(True); self.manual_frame=QCheckBox('4辺をドラッグ調整'); self.manual_frame.setChecked(True); self.show_frame.toggled.connect(self.refresh); c.addWidget(self.show_frame); c.addWidget(self.manual_frame)
+        self.show_frame=QCheckBox('フレーム枠を表示'); self.show_frame.setChecked(True); self.manual_frame=QCheckBox('自由変形ハンドルを使う'); self.manual_frame.setChecked(True); self.show_frame.toggled.connect(self.refresh); c.addWidget(self.show_frame); c.addWidget(self.manual_frame)
         row=QHBoxLayout(); auto=QPushButton('黒帯を自動検出'); auto.clicked.connect(self.auto_frame); reset=QPushButton('画像全体に戻す'); reset.clicked.connect(self.reset_frame); row.addWidget(auto); row.addWidget(reset); c.addLayout(row)
+        fg=QGridLayout(); fg.addWidget(QLabel('フレーム太さ'),0,0); self.frame_width=StepControl(0.5,8.0,2.0,0.5); self.frame_width.value.valueChanged.connect(self.refresh); fg.addWidget(self.frame_width,0,1)
+        fg.addWidget(QLabel('フレーム透明度'),1,0); self.frame_alpha=QSlider(Qt.Orientation.Horizontal); self.frame_alpha.setRange(0,100); self.frame_alpha.setValue(100); self.frame_alpha.valueChanged.connect(self.refresh); fg.addWidget(self.frame_alpha,1,1)
+        fcbtn=QPushButton('フレーム色'); fcbtn.clicked.connect(self.choose_frame_color); fg.addWidget(fcbtn,2,0,1,2); c.addLayout(fg)
+        fhint=QLabel('四隅＝X/Y自由移動（斜め可） / 辺中央＝その辺だけを垂直方向へ移動 / 枠内＝フレーム全体を移動'); fhint.setObjectName('note'); fhint.setWordWrap(True); c.addWidget(fhint)
 
         self.section(c,'表示補正（元画像は変更しません）')
         self.sliders={}
@@ -248,7 +337,7 @@ class MovieShotAnalyzer(QMainWindow):
         scroll=QScrollArea(); scroll.setObjectName('controlScroll'); scroll.setWidgetResizable(True); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); scroll.setWidget(cw); scroll.setMinimumWidth(325); scroll.setMaximumWidth(385); outer.addWidget(scroll,0)
         self.canvas=ImageCanvas(self); outer.addWidget(self.canvas,1); self._update_nav()
     def _style(self):
-        self.setStyleSheet('''QMainWindow,QWidget{background:#20242b;color:#e8edf3}#controlsWidget{background:#20242b}#controlScroll{border:1px solid #343a43;background:#20242b}#appTitle{font-size:20px;font-weight:700}#subtitle,#note{color:#aeb7c4}#section{font-size:14px;font-weight:700;color:#d9e2ec;margin-top:8px;border-top:1px solid #3b424d;padding-top:8px}#fileLabel{background:#171a20;border:1px solid #343a43;border-radius:5px;padding:8px}QPushButton{background:#303641;border:1px solid #48505d;border-radius:5px;padding:7px}QPushButton:hover{background:#3a424f}QPushButton:disabled{color:#69717c;background:#272b32}QCheckBox{padding:3px 1px}QSpinBox{background:#171a20;border:1px solid #48505d;padding:4px}QSlider::groove:horizontal{height:4px;background:#3b424d}QSlider::handle:horizontal{width:14px;margin:-5px 0;background:#8ab4f8;border-radius:7px}QScrollBar:vertical{background:#20242b;width:12px}QScrollBar::handle:vertical{background:#4a5260;min-height:28px;border-radius:5px}QStatusBar{background:#171a20;color:#aeb7c4}''')
+        self.setStyleSheet('''QMainWindow,QWidget{background:#20242b;color:#e8edf3}#controlsWidget{background:#20242b}#controlScroll{border:1px solid #343a43;background:#20242b}#appTitle{font-size:20px;font-weight:700}#subtitle,#note{color:#aeb7c4}#section{font-size:14px;font-weight:700;color:#d9e2ec;margin-top:8px;border-top:1px solid #3b424d;padding-top:8px}#fileLabel{background:#171a20;border:1px solid #343a43;border-radius:5px;padding:8px}QPushButton{background:#303641;border:1px solid #48505d;border-radius:5px;padding:7px}QPushButton:hover{background:#3a424f}QPushButton:disabled{color:#69717c;background:#272b32}QCheckBox{padding:3px 1px}QDoubleSpinBox{background:#171a20;border:1px solid #48505d;padding:4px}QSlider::groove:horizontal{height:4px;background:#3b424d}QSlider::handle:horizontal{width:14px;margin:-5px 0;background:#8ab4f8;border-radius:7px}QScrollBar:vertical{background:#20242b;width:12px}QScrollBar::handle:vertical{background:#4a5260;min-height:28px;border-radius:5px}QStatusBar{background:#171a20;color:#aeb7c4}''')
     def dragEnterEvent(self,e):
         if e.mimeData().hasUrls():e.acceptProposedAction()
     def dropEvent(self,e): self.open_paths([Path(u.toLocalFile()) for u in e.mimeData().urls() if u.isLocalFile()]); e.acceptProposedAction()
@@ -274,7 +363,7 @@ class MovieShotAnalyzer(QMainWindow):
         p=self.paths[self.current_index]
         try:
             with Image.open(p) as src:self.original=src.convert('RGB').copy()
-            self.frame=self.frames.get(str(p),(0.,0.,1.,1.)); self.update_display(); self.file_label.setText(f'{p.name}\n{self.current_index+1} / {len(self.paths)}\n{self.original.width} × {self.original.height} px'); self.statusBar().showMessage(str(p))
+            self.frame_quad=[tuple(q) for q in self.frames.get(str(p),[(0.,0.),(1.,0.),(1.,1.),(0.,1.)])]; self.update_display(); self.file_label.setText(f'{p.name}\n{self.current_index+1} / {len(self.paths)}\n{self.original.width} × {self.original.height} px'); self.statusBar().showMessage(str(p))
         except Exception as ex:self.file_label.setText(f'読み込み失敗: {p.name}\n{ex}')
         self._update_nav()
     def update_display(self):
@@ -288,10 +377,10 @@ class MovieShotAnalyzer(QMainWindow):
         for k in self.sliders:self.sliders[k].setValue(100)
     def auto_frame(self):
         if self.original is None:return
-        self.frame=detect_frame(self.original); self.save_frame(); self.canvas.update(); self.statusBar().showMessage('黒帯フレームを自動検出しました。必要なら緑の4辺をドラッグしてください。',5000)
-    def reset_frame(self): self.frame=(0.,0.,1.,1.); self.save_frame(); self.canvas.update()
+        l,t,r,b=detect_frame(self.original); self.frame_quad=[(l,t),(r,t),(r,b),(l,b)]; self.save_frame(); self.canvas.update(); self.statusBar().showMessage('黒帯フレームを自動検出しました。必要なら緑の四隅または辺をドラッグしてください。',5000)
+    def reset_frame(self): self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.save_frame(); self.canvas.update()
     def save_frame(self):
-        if 0<=self.current_index<len(self.paths): self.frames[str(self.paths[self.current_index])]=self.frame
+        if 0<=self.current_index<len(self.paths): self.frames[str(self.paths[self.current_index])]=[tuple(q) for q in self.frame_quad]
     def prev_image(self):
         self.save_frame()
         if self.current_index>0:self.current_index-=1;self.load_current()
@@ -322,9 +411,10 @@ class MovieShotAnalyzer(QMainWindow):
     def choose_point_color(self):
         c=QColorDialog.getColor(QColor(self.point_color),self,'交点○の塗り色')
         if c.isValid(): self.point_color=c.name(); self.refresh()
-    def choose_point_outline_color(self):
-        c=QColorDialog.getColor(QColor(self.point_outline_color),self,'交点○の外周色')
-        if c.isValid(): self.point_outline_color=c.name(); self.refresh()
+
+    def choose_frame_color(self):
+        c=QColorDialog.getColor(QColor(self.frame_color),self,'フレーム色')
+        if c.isValid(): self.frame_color=c.name(); self.refresh()
 
 if __name__=='__main__':
     app=QApplication(sys.argv); app.setApplicationName('Movie Shot Analyzer'); w=MovieShotAnalyzer(); w.show(); sys.exit(app.exec())
