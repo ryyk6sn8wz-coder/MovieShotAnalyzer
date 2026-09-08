@@ -1,447 +1,278 @@
+"""Movie Shot Analyzer V3 — frame-aware composition and perspective overlays."""
+from __future__ import annotations
 
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk, colorchooser
+import csv
+import math
+import sys
 from pathlib import Path
-from PIL import Image, ImageTk, ImageDraw
-import math, csv, json, os
 
-try:
-    from tkinterdnd2 import DND_FILES, TkinterDnD
-except ImportError:
-    DND_FILES = None
-    TkinterDnD = None
+import numpy as np
+from PIL import Image
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import (
+    QApplication, QCheckBox, QColorDialog, QFileDialog, QFormLayout, QFrame, QGridLayout,
+    QGroupBox, QHBoxLayout, QLabel, QMainWindow, QPushButton, QScrollArea, QSlider,
+    QSpinBox, QVBoxLayout, QWidget,
+)
 
-EXTS = {".jpg",".jpeg",".png",".webp",".bmp",".tif",".tiff"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
-def intersect(l1, l2):
-    x1,y1,x2,y2 = l1
-    x3,y3,x4,y4 = l2
-    den=(x1-x2)*(y3-y4)-(y1-y2)*(x3-x4)
-    if abs(den) < 1e-9:
-        return None
-    px=((x1*y2-y1*x2)*(x3-x4)-(x1-x2)*(x3*y4-y3*x4))/den
-    py=((x1*y2-y1*x2)*(y3-y4)-(y1-y2)*(x3*y4-y3*x4))/den
-    return px,py
 
-def hex_rgba(h, a=180):
-    h=h.lstrip("#")
-    return tuple(int(h[i:i+2],16) for i in (0,2,4))+(a,)
+def detect_frame(path: Path) -> tuple[float, float, float, float]:
+    """Detect near-black letterbox/pillarbox bands; returns normalized L,T,R,B."""
+    with Image.open(path) as source:
+        image = source.convert("RGB")
+        image.thumbnail((1000, 1000))
+        pixels = np.asarray(image, dtype=np.float32)
+    lum = pixels.mean(axis=2)
+    h, w = lum.shape
+    # A band must be mostly very dark, not merely a dark scene edge.
+    row_dark = (lum < 22).mean(axis=1) > 0.92
+    col_dark = (lum < 22).mean(axis=0) > 0.92
 
-def extend_line_to_rect(vp, direction, w, h):
-    vx,vy=vp
-    dx,dy=direction
-    pts=[]
-    eps=1e-9
-    if abs(dx)>eps:
-        for x in (0,w):
-            t=(x-vx)/dx
-            y=vy+t*dy
-            if -1e6 <= y <= 1e6:
-                pts.append((x,y))
-    if abs(dy)>eps:
-        for y in (0,h):
-            t=(y-vy)/dy
-            x=vx+t*dx
-            if -1e6 <= x <= 1e6:
-                pts.append((x,y))
-    # unique and choose the two farthest useful points
-    uniq=[]
-    for p in pts:
-        if all(math.hypot(p[0]-q[0],p[1]-q[1])>1e-6 for q in uniq):
-            uniq.append(p)
-    if len(uniq)>=2:
-        best=max(((math.dist(a,b),a,b) for i,a in enumerate(uniq) for b in uniq[i+1:]), key=lambda z:z[0])
-        return best[1],best[2]
-    return None
+    def edge_run(values, forward=True):
+        indices = range(len(values)) if forward else range(len(values) - 1, -1, -1)
+        run = 0
+        for i in indices:
+            if values[i]: run += 1
+            else: break
+        return run
 
-def draw_overlay(im, cfg, perspective):
-    w,h=im.size
-    ov=Image.new("RGBA",(w,h),(0,0,0,0))
-    d=ImageDraw.Draw(ov)
-    def line(points,color,width=None):
-        d.line(points,fill=hex_rgba(color,cfg["guide_alpha"] if color==cfg["guide_color"] else cfg["line_alpha"]),
-               width=width or cfg["guide_width"])
-    gc=cfg["guide_color"]; pc=cfg["perspective_color"]; ec=cfg["eye_color"]; vc=cfg["vp_color"]
-    gw=cfg["guide_width"]; pw=cfg["perspective_width"]; ew=cfg["eye_width"]; vw=cfg["vp_width"]
-    # Composition guides
-    if cfg["guides"].get("thirds"):
-        for x in (w/3,2*w/3): d.line([(x,0),(x,h)],fill=hex_rgba(gc,cfg["guide_alpha"]),width=gw)
-        for y in (h/3,2*h/3): d.line([(0,y),(w,y)],fill=hex_rgba(gc,cfg["guide_alpha"]),width=gw)
-    if cfg["guides"].get("golden"):
-        phi=(1+math.sqrt(5))/2
-        for x in (w/phi,w-w/phi): d.line([(x,0),(x,h)],fill=hex_rgba(gc,cfg["guide_alpha"]),width=gw)
-        for y in (h/phi,h-h/phi): d.line([(0,y),(w,y)],fill=hex_rgba(gc,cfg["guide_alpha"]),width=gw)
-    if cfg["guides"].get("center"):
-        d.line([(w/2,0),(w/2,h)],fill=hex_rgba(gc,cfg["guide_alpha"]),width=gw)
-        d.line([(0,h/2),(w,h/2)],fill=hex_rgba(gc,cfg["guide_alpha"]),width=gw)
-    if cfg["guides"].get("diagonal"):
-        d.line([(0,0),(w,h)],fill=hex_rgba(gc,cfg["guide_alpha"]),width=gw)
-        d.line([(w,0),(0,h)],fill=hex_rgba(gc,cfg["guide_alpha"]),width=gw)
-    if cfg["guides"].get("triangle"):
-        d.line([(0,h),(w/2,0),(w,h)],fill=hex_rgba(gc,cfg["guide_alpha"]),width=gw)
-    if cfg["guides"].get("symmetry"):
-        d.line([(w/2,0),(w/2,h)],fill=hex_rgba(gc,cfg["guide_alpha"]),width=gw)
-    if cfg["guides"].get("spiral"):
-        phi=(1+math.sqrt(5))/2
-        cx,cy=w/2,h/2
-        a=min(w,h)*0.015
-        b=math.log(phi)/(math.pi/2)
-        pts=[]
-        for i in range(1000):
-            t=i/999*math.pi*4
-            r=a*math.exp(b*t)
-            x=cx+r*math.cos(t); y=cy+r*math.sin(t)
-            if -w*.15<x<w*1.15 and -h*.15<y<h*1.15:
-                pts.append((x,y))
-        if len(pts)>1: d.line(pts,fill=hex_rgba(gc,cfg["guide_alpha"]),width=gw)
+    top, bottom = edge_run(row_dark), edge_run(row_dark, False)
+    left, right = edge_run(col_dark), edge_run(col_dark, False)
+    # Do not crop away more than 30% at any edge: protects genuinely dark shots.
+    top = top if top < h * .30 else 0; bottom = bottom if bottom < h * .30 else 0
+    left = left if left < w * .30 else 0; right = right if right < w * .30 else 0
+    if top + bottom > h * .45: top = bottom = 0
+    if left + right > w * .45: left = right = 0
+    return left / w, top / h, 1 - right / w, 1 - bottom / h
 
-    # Perspective
-    vps=perspective.get("vps",[])
-    if cfg["show_perspective"]:
-        for vp in vps:
-            vx,vy=vp
-            # Lines from VP to corners and center; visually useful perspective fan
-            for p in ((0,0),(w,0),(0,h),(w,h),(w/2,h/2)):
-                d.line([(vx,vy),p],fill=hex_rgba(pc,cfg["line_alpha"]),width=pw)
-    if cfg["show_eye"] and vps:
-        if len(vps)>=2:
-            y=sum(v[1] for v in vps[:2])/2
+
+class Canvas(QLabel):
+    changed = Signal()
+
+    def __init__(self, app):
+        super().__init__("画像またはフォルダをここへドラッグ＆ドロップ\nまたは「画像を開く」を押してください")
+        self.app = app; self.setAlignment(Qt.AlignmentFlag.AlignCenter); self.setAcceptDrops(True)
+        self.setMinimumSize(600, 420); self.setStyleSheet("background:#16181d;color:#cbd5e1;font-size:18px;")
+        self.source: QPixmap | None = None; self.image_rect = QRectF(); self.drag_target = None
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls(): event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent):
+        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls()]
+        self.app.open_paths(paths); event.acceptProposedAction()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event); self.update()
+
+    def draw_image(self, painter):
+        if not self.source: return
+        scaled = self.source.size().scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio)
+        x = (self.width() - scaled.width()) / 2; y = (self.height() - scaled.height()) / 2
+        self.image_rect = QRectF(x, y, scaled.width(), scaled.height())
+        painter.drawPixmap(self.image_rect.toRect(), self.source)
+
+    def pos_from_norm(self, x, y):
+        r = self.image_rect; return QPointF(r.left()+x*r.width(), r.top()+y*r.height())
+
+    def norm_from_pos(self, p):
+        r = self.image_rect
+        return ((p.x()-r.left())/r.width(), (p.y()-r.top())/r.height())
+
+    def frame_rect(self):
+        l,t,r,b = self.app.frame
+        p1=self.pos_from_norm(l,t); p2=self.pos_from_norm(r,b); return QRectF(p1,p2).normalized()
+
+    def paintEvent(self, event):
+        painter=QPainter(self); painter.fillRect(self.rect(), QColor("#16181d")); self.draw_image(painter)
+        if not self.source: return
+        a=self.app; fr=self.frame_rect()
+        if a.show_frame.isChecked():
+            pen=QPen(QColor("#f59e0b")); pen.setWidth(2); pen.setStyle(Qt.PenStyle.DashLine); painter.setPen(pen); painter.drawRect(fr)
+            for x,y in ((fr.left(),fr.top()),(fr.right(),fr.top()),(fr.left(),fr.bottom()),(fr.right(),fr.bottom())): painter.drawRect(QRectF(x-4,y-4,8,8))
+        color=QColor(a.guide_color); color.setAlphaF(a.guide_alpha.value()/100); pen=QPen(color, a.guide_width.value()); painter.setPen(pen)
+        def vline(q): painter.drawLine(QPointF(fr.left()+fr.width()*q,fr.top()), QPointF(fr.left()+fr.width()*q,fr.bottom()))
+        def hline(q): painter.drawLine(QPointF(fr.left(),fr.top()+fr.height()*q), QPointF(fr.right(),fr.top()+fr.height()*q))
+        if a.thirds.isChecked():
+            vline(1/3); vline(2/3); hline(1/3); hline(2/3)
+            for q in a.third_v: vline(q)
+            for q in a.third_h: hline(q)
+        if a.cross.isChecked():
+            vline(.5); hline(.5)
+            for q in a.cross_v: vline(q)
+            for q in a.cross_h: hline(q)
+        if a.diagonal.isChecked():
+            painter.drawLine(fr.topLeft(),fr.bottomRight()); painter.drawLine(fr.topRight(),fr.bottomLeft())
+        if a.golden.isChecked():
+            phi=.618; vline(1-phi); vline(phi); hline(1-phi); hline(phi)
+        self.draw_perspective(painter, fr)
+
+    def draw_perspective(self, painter, fr):
+        a=self.app
+        line_color=QColor(a.perspective_color); line_color.setAlphaF(a.perspective_alpha.value()/100)
+        painter.setPen(QPen(line_color,a.perspective_width.value()))
+        points=[]
+        for i, vp in enumerate(a.vps):
+            if vp is None: continue
+            p=self.pos_from_norm(*vp); points.append(p)
+            if a.show_perspective.isChecked():
+                for q in (fr.topLeft(),fr.topRight(),fr.bottomLeft(),fr.bottomRight()): painter.drawLine(p,q)
+            marker=QColor(a.vp_color); marker.setAlphaF(a.vp_alpha.value()/100)
+            painter.setPen(QPen(marker,a.vp_border.value())); painter.setBrush(marker)
+            radius=a.vp_size.value()/2; painter.drawEllipse(p,radius,radius)
+            painter.setPen(QPen(line_color,a.perspective_width.value()))
+        if a.eye_level.isChecked() and points:
+            y=sum(p.y() for p in points)/len(points)
+            eye=QColor(a.eye_color); eye.setAlphaF(a.eye_alpha.value()/100); painter.setPen(QPen(eye,a.eye_width.value()))
+            painter.drawLine(QPointF(fr.left(),y),QPointF(fr.right(),y))
+
+    def mousePressEvent(self, event):
+        if not self.source or event.button()!=Qt.MouseButton.LeftButton: return
+        p=event.position(); fr=self.frame_rect(); a=self.app
+        # VP assignment mode has priority.
+        if a.active_vp is not None:
+            a.vps[a.active_vp]=self.norm_from_pos(p); a.active_vp=None; a.vp_buttons[a.active_vp if a.active_vp is not None else 0].setText("VP1を指定")
+            a.refresh_vp_labels(); self.update(); return
+        tolerance=8
+        if a.show_frame.isChecked():
+            sides=[("left",abs(p.x()-fr.left())),("right",abs(p.x()-fr.right())),("top",abs(p.y()-fr.top())),("bottom",abs(p.y()-fr.bottom()))]
+            name,d=min(sides,key=lambda item:item[1])
+            if d<tolerance and ((name in ("left","right") and fr.top()-tolerance<=p.y()<=fr.bottom()+tolerance) or (name in ("top","bottom") and fr.left()-tolerance<=p.x()<=fr.right()+tolerance)):
+                self.drag_target=("frame",name); return
+        candidates=[]
+        for family, values, axis in (("third_v",a.third_v,"x"),("third_h",a.third_h,"y"),("cross_v",a.cross_v,"x"),("cross_h",a.cross_h,"y")):
+            for idx,q in enumerate(values):
+                coord=fr.left()+q*fr.width() if axis=="x" else fr.top()+q*fr.height()
+                dist=abs((p.x() if axis=="x" else p.y())-coord)
+                if dist<tolerance: candidates.append((dist,family,idx,axis))
+        if candidates:
+            _,family,idx,axis=min(candidates); self.drag_target=(family,idx,axis)
+
+    def mouseMoveEvent(self,event):
+        if not self.drag_target or not self.source: return
+        p=event.position(); a=self.app; target=self.drag_target
+        if target[0]=="frame":
+            l,t,r,b=a.frame; n=self.norm_from_pos(p); side=target[1]
+            if side=="left": l=max(0,min(n[0],r-.03))
+            elif side=="right": r=min(1,max(n[0],l+.03))
+            elif side=="top": t=max(0,min(n[1],b-.03))
+            else: b=min(1,max(n[1],t+.03))
+            a.frame=(l,t,r,b)
         else:
-            y=vps[0][1]
-        d.line([(0,y),(w,y)],fill=hex_rgba(ec,cfg["eye_alpha"]),width=ew)
-    if cfg["show_vp"]:
-        r=cfg["vp_size"]
-        for vx,vy in vps:
-            # filled circle with optional contrasting outline
-            d.ellipse((vx-r,vy-r,vx+r,vy+r),fill=hex_rgba(vc,cfg["vp_alpha"]),
-                      outline=hex_rgba(vc,255),width=vw)
-    return Image.alpha_composite(im.convert("RGBA"),ov).convert("RGB")
+            family,idx,axis=target; fr=self.frame_rect(); value=(p.x()-fr.left())/fr.width() if axis=="x" else (p.y()-fr.top())/fr.height()
+            getattr(a,family)[idx]=max(.01,min(.99,value))
+        self.changed.emit(); self.update()
 
-def estimate_from_vps(im, vps):
-    w,h=im.size
-    if not vps:
-        return {"perspective":"未指定","focal":"推定不能","fov":"推定不能","eye":"推定不能"}
-    if len(vps)>=3:
-        ptype="3点透視"
-    elif len(vps)>=2:
-        ptype="2点透視"
-    else:
-        ptype="1点透視"
-    eye_y = (sum(v[1] for v in vps[:2])/2) if len(vps)>=2 else vps[0][1]
-    eye = f"{eye_y/h*100:.1f}% ({eye_y:.0f}px)"
-    focal="推定不能"; fov="推定不能"
-    if len(vps)>=2:
-        # Orthogonal VP formula, assuming centered principal point and rectilinear projection.
-        cx,cy=w/2,h/2
-        f2=-(vps[0][0]-cx)*(vps[1][0]-cx)-(vps[0][1]-cy)*(vps[1][1]-cy)
-        if f2>0:
-            f=math.sqrt(f2)
-            hfov=2*math.degrees(math.atan((w/2)/f))
-            mm=36/(2*math.tan(math.radians(hfov/2)))
-            if 10<=mm<=300 and 5<=hfov<=170:
-                focal=f"約 {mm:.0f}mm相当"
-                fov=f"約 {hfov:.0f}°"
-    return {"perspective":ptype,"focal":focal,"fov":fov,"eye":eye}
+    def mouseReleaseEvent(self,event): self.drag_target=None
 
-class App:
-    def __init__(self, root):
-        self.root=root
-        root.title("Movie Shot Analyzer V2")
-        root.geometry("1250x820")
-        root.minsize(1050,700)
-        self.files=[]
-        self.current_index=0
-        self.current_image=None
-        self.tkimg=None
-        self.display_scale=1
-        self.offset=(0,0)
-        self.vp_lines=[[],[],[]]  # each VP: list of two image-coordinate line segments
-        self.vps=[]
-        self.active_family=0
-        self.pending_points=[]
-        self.guide_vars={}
-        self.build_ui()
-        self.setup_dnd()
 
-    def build_ui(self):
-        main=ttk.Frame(self.root,padding=10); main.pack(fill="both",expand=True)
-        left=ttk.Frame(main,width=270); left.pack(side="left",fill="y",padx=(0,8))
-        center=ttk.Frame(main); center.pack(side="left",fill="both",expand=True)
-        right=ttk.Frame(main,width=280); right.pack(side="right",fill="y",padx=(8,0))
+class MovieShotAnalyzer(QMainWindow):
+    def __init__(self):
+        super().__init__(); self.setWindowTitle("Movie Shot Analyzer V3"); self.resize(1500,900)
+        self.current_path=None; self.paths=[]; self.frame=(0.,0.,1.,1.); self.active_vp=None; self.vps=[None,None,None]
+        self.third_v=[]; self.third_h=[]; self.cross_v=[]; self.cross_h=[]; self.guide_color="#ef4444"; self.perspective_color="#3b82f6"; self.vp_color="#facc15"; self.eye_color="#22c55e"
+        root=QWidget(); self.setCentralWidget(root); layout=QHBoxLayout(root); self.canvas=Canvas(self); layout.addWidget(self.canvas,1)
+        panel=QWidget(); panel.setMaximumWidth(360); controls=QVBoxLayout(panel); layout.addWidget(panel)
+        buttons=QHBoxLayout(); open_btn=QPushButton("画像を開く"); open_btn.clicked.connect(self.choose_images); buttons.addWidget(open_btn)
+        export_btn=QPushButton("CSV出力"); export_btn.clicked.connect(self.export_csv); buttons.addWidget(export_btn); controls.addLayout(buttons)
+        self.file_label=QLabel("画像未選択"); self.file_label.setWordWrap(True); controls.addWidget(self.file_label)
+        controls.addWidget(self.frame_group()); controls.addWidget(self.guide_group()); controls.addWidget(self.perspective_group()); controls.addWidget(self.display_group()); controls.addStretch()
+        scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(panel); layout.addWidget(scroll); layout.removeWidget(panel); panel.setParent(None)
 
-        ttk.Label(left,text="Movie Shot Analyzer V2",font=("Segoe UI",17,"bold")).pack(anchor="w")
-        ttk.Label(left,text="画像・フォルダをドラッグ＆ドロップ").pack(anchor="w",pady=(2,8))
-        self.drop_label=tk.Label(left,text="ここへドロップ\nまたは下のボタン",relief="ridge",height=4)
-        self.drop_label.pack(fill="x",pady=4)
-        ttk.Button(left,text="ファイル／フォルダを選択",command=self.pick).pack(fill="x")
-        self.status=ttk.Label(left,text="0枚")
-        self.status.pack(anchor="w",pady=4)
+    def frame_group(self):
+        box=QGroupBox("実映像フレーム（全ガイドの基準）"); lay=QVBoxLayout(box)
+        self.show_frame=QCheckBox("フレーム境界を表示"); self.show_frame.setChecked(True); self.show_frame.toggled.connect(self.canvas.update); lay.addWidget(self.show_frame)
+        row=QHBoxLayout(); auto=QPushButton("黒帯を自動検出"); auto.clicked.connect(self.auto_detect); reset=QPushButton("全体にリセット"); reset.clicked.connect(self.reset_frame); row.addWidget(auto); row.addWidget(reset); lay.addLayout(row)
+        lay.addWidget(QLabel("境界線を直接ドラッグして4辺を調整できます。")); return box
 
-        gbox=ttk.LabelFrame(left,text="ガイド表示",padding=8); gbox.pack(fill="x",pady=6)
-        names=[("thirds","三分割"),("golden","黄金比"),("spiral","黄金螺旋"),("triangle","三角構図"),
-               ("diagonal","対角線"),("center","十字・中央"),("symmetry","対称構図")]
-        for i,(k,n) in enumerate(names):
-            v=tk.BooleanVar(value=k=="thirds"); self.guide_vars[k]=v
-            ttk.Checkbutton(gbox,text=n,variable=v).grid(row=i//2,column=i%2,sticky="w",padx=2,pady=2)
+    def guide_group(self):
+        box=QGroupBox("構図ガイド"); lay=QVBoxLayout(box)
+        self.thirds=QCheckBox("三分割（基本線は常に維持）"); self.cross=QCheckBox("十字（中央線は常に維持）"); self.diagonal=QCheckBox("対角線"); self.golden=QCheckBox("黄金比"); self.thirds.setChecked(True)
+        for w in (self.thirds,self.cross,self.diagonal,self.golden): w.toggled.connect(self.canvas.update); lay.addWidget(w)
+        lay.addWidget(QLabel("追加ガイド：各方向 最大3本（線を直接ドラッグ可）"))
+        grid=QGridLayout(); grid.addWidget(QLabel("三分割"),0,0); grid.addWidget(QLabel("十字"),0,1)
+        for label, attr, row in (("縦線","third_v",1),("横線","third_h",2)):
+            cell=QHBoxLayout(); b=QPushButton(label+" +"); b.clicked.connect(lambda _,x=attr:self.add_guide(x)); d=QPushButton("最後を削除"); d.clicked.connect(lambda _,x=attr:self.remove_guide(x)); cell.addWidget(b); cell.addWidget(d); grid.addLayout(cell,row,0)
+        for label, attr, row in (("縦線","cross_v",1),("横線","cross_h",2)):
+            cell=QHBoxLayout(); b=QPushButton(label+" +"); b.clicked.connect(lambda _,x=attr:self.add_guide(x)); d=QPushButton("最後を削除"); d.clicked.connect(lambda _,x=attr:self.remove_guide(x)); cell.addWidget(b); cell.addWidget(d); grid.addLayout(cell,row,1)
+        lay.addLayout(grid); self.extra_label=QLabel(); lay.addWidget(self.extra_label)
+        style=QFormLayout(); self.guide_width=self.spin(1,12,2); self.guide_alpha=self.slider(10,100,80); c=QPushButton("色を選ぶ"); c.clicked.connect(lambda:self.pick_color("guide_color")); style.addRow("ガイド太さ",self.guide_width); style.addRow("ガイド透明度",self.guide_alpha); style.addRow("ガイド色",c); lay.addLayout(style); self.refresh_extra_label(); return box
 
-        pbox=ttk.LabelFrame(left,text="パース",padding=8); pbox.pack(fill="x",pady=6)
-        self.show_p=tk.BooleanVar(value=True); self.show_eye=tk.BooleanVar(value=True); self.show_vp=tk.BooleanVar(value=True)
-        ttk.Checkbutton(pbox,text="パースライン",variable=self.show_p,command=self.refresh).pack(anchor="w")
-        ttk.Checkbutton(pbox,text="アイレベル",variable=self.show_eye,command=self.refresh).pack(anchor="w")
-        ttk.Checkbutton(pbox,text="消失点○",variable=self.show_vp,command=self.refresh).pack(anchor="w")
-        ttk.Button(pbox,text="VP1を指定（2本の線）",command=lambda:self.start_vp(0)).pack(fill="x",pady=2)
-        ttk.Button(pbox,text="VP2を指定（2本の線）",command=lambda:self.start_vp(1)).pack(fill="x",pady=2)
-        ttk.Button(pbox,text="VP3を指定（2本の線）",command=lambda:self.start_vp(2)).pack(fill="x",pady=2)
-        ttk.Button(pbox,text="指定をクリア",command=self.clear_vps).pack(fill="x",pady=2)
-        self.vp_status=ttk.Label(pbox,text="VP未指定",wraplength=240)
-        self.vp_status.pack(anchor="w",pady=3)
+    def perspective_group(self):
+        box=QGroupBox("パース／アイレベル"); lay=QVBoxLayout(box); self.show_perspective=QCheckBox("VPからパースラインを表示"); self.eye_level=QCheckBox("アイレベルを表示")
+        for w in (self.show_perspective,self.eye_level): w.toggled.connect(self.canvas.update); lay.addWidget(w)
+        self.vp_buttons=[]
+        for i in range(3):
+            row=QHBoxLayout(); b=QPushButton(f"VP{i+1}を指定"); b.clicked.connect(lambda _,x=i:self.set_vp_mode(x)); clear=QPushButton("消去"); clear.clicked.connect(lambda _,x=i:self.clear_vp(x)); row.addWidget(b); row.addWidget(clear); lay.addLayout(row); self.vp_buttons.append(b)
+        form=QFormLayout(); self.perspective_width=self.spin(1,12,2); self.perspective_alpha=self.slider(10,100,75); self.vp_size=self.spin(4,40,12); self.vp_border=self.spin(1,8,1); self.vp_alpha=self.slider(10,100,100); self.eye_width=self.spin(1,12,2); self.eye_alpha=self.slider(10,100,90)
+        for label,attr in (("パース色","perspective_color"),("VP色","vp_color"),("アイレベル色","eye_color")):
+            b=QPushButton("色を選ぶ"); b.clicked.connect(lambda _,x=attr:self.pick_color(x)); form.addRow(label,b)
+        form.addRow("パース太さ",self.perspective_width); form.addRow("パース透明度",self.perspective_alpha); form.addRow("VPサイズ",self.vp_size); form.addRow("VP枠太さ",self.vp_border); form.addRow("VP透明度",self.vp_alpha); form.addRow("アイレベル太さ",self.eye_width); form.addRow("アイレベル透明度",self.eye_alpha); lay.addLayout(form); return box
 
-        ttk.Button(left,text="一括解析・保存",command=self.batch).pack(fill="x",pady=(10,3))
-        ttk.Button(left,text="現在の画像を保存",command=self.save_current).pack(fill="x")
-        self.progress=ttk.Progressbar(left,mode="determinate"); self.progress.pack(fill="x",pady=8)
+    def display_group(self):
+        box=QGroupBox("表示補正（元画像・ガイド計算は不変）"); form=QFormLayout(box); self.brightness=self.slider(-100,100,0); self.contrast=self.slider(-100,100,0); self.gamma=self.slider(20,300,100); self.saturation=self.slider(-100,100,0)
+        for label,w in (("明るさ",self.brightness),("コントラスト",self.contrast),("ガンマ",self.gamma),("彩度",self.saturation)): form.addRow(label,w)
+        reset=QPushButton("表示補正をリセット"); reset.clicked.connect(self.reset_adjustments); form.addRow(reset); return box
 
-        self.canvas=tk.Canvas(center,background="#151515",highlightthickness=0)
-        self.canvas.pack(fill="both",expand=True)
-        self.canvas.bind("<Button-1>",self.canvas_click)
-        nav=ttk.Frame(center); nav.pack(fill="x",pady=4)
-        ttk.Button(nav,text="◀",command=self.prev).pack(side="left")
-        self.counter=ttk.Label(nav,text="0 / 0"); self.counter.pack(side="left",padx=10)
-        ttk.Button(nav,text="▶",command=self.next).pack(side="left")
-        ttk.Button(nav,text="全体表示",command=self.show_current).pack(side="right")
+    def slider(self, minimum, maximum, value):
+        w=QSlider(Qt.Orientation.Horizontal); w.setRange(minimum,maximum); w.setValue(value); w.valueChanged.connect(self.refresh_image); return w
+    def spin(self, minimum, maximum, value):
+        w=QSpinBox(); w.setRange(minimum,maximum); w.setValue(value); w.valueChanged.connect(self.canvas.update); return w
+    def choose_images(self):
+        names,_=QFileDialog.getOpenFileNames(self,"画像を開く","","Images (*.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff)"); self.open_paths([Path(x) for x in names])
+    def open_paths(self, paths):
+        files=[]
+        for p in paths:
+            files.extend(sorted(x for x in p.rglob("*") if x.suffix.lower() in IMAGE_EXTENSIONS) if p.is_dir() else [p])
+        files=[p for p in files if p.exists() and p.suffix.lower() in IMAGE_EXTENSIONS]
+        if files: self.paths=files; self.load_image(files[0])
+    def load_image(self,path):
+        self.current_path=path; self.frame=(0.,0.,1.,1.); self.vps=[None,None,None]; self.file_label.setText(f"{path.name}\n{len(self.paths)} 枚読み込み")
+        self.refresh_image()
+    def refresh_image(self):
+        if not self.current_path: return
+        with Image.open(self.current_path) as source:
+            im=source.convert("RGB").copy()
+        arr=np.asarray(im,dtype=np.float32)/255
+        arr=np.clip(arr + self.brightness.value()/255,0,1)
+        contrast=1+self.contrast.value()/100; arr=np.clip((arr-.5)*contrast+.5,0,1)
+        arr=np.power(arr,1/(self.gamma.value()/100))
+        gray=arr.mean(axis=2,keepdims=True); arr=np.clip(gray+(arr-gray)*(1+self.saturation.value()/100),0,1)
+        arr=(arr*255).astype(np.uint8); h,w,_=arr.shape; qi=QImage(arr.data,w,h,w*3,QImage.Format.Format_RGB888).copy(); self.canvas.source=QPixmap.fromImage(qi); self.canvas.update()
+    def auto_detect(self):
+        if self.current_path: self.frame=detect_frame(self.current_path); self.canvas.update()
+    def reset_frame(self): self.frame=(0.,0.,1.,1.); self.canvas.update()
+    def reset_adjustments(self):
+        for x,v in ((self.brightness,0),(self.contrast,0),(self.gamma,100),(self.saturation,0)): x.setValue(v)
+    def add_guide(self,attr):
+        values=getattr(self,attr)
+        if len(values)>=3: return
+        defaults=[.25,.5,.75]; values.append(defaults[len(values)]); self.refresh_extra_label(); self.canvas.update()
+    def remove_guide(self,attr):
+        values=getattr(self,attr)
+        if values: values.pop()
+        self.refresh_extra_label(); self.canvas.update()
+    def refresh_extra_label(self):
+        def item(name,values): return f"{name}: " + (" / ".join(f"{round(v*100)}% [×{i+1}]" for i,v in enumerate(values)) or "なし")
+        self.extra_label.setText(item("三分割 縦",self.third_v)+"\n"+item("三分割 横",self.third_h)+"\n"+item("十字 縦",self.cross_v)+"\n"+item("十字 横",self.cross_h)+"\n※ [×番号] は該当する追加線を消去")
+    def mousePressEvent(self,event): super().mousePressEvent(event)
+    def set_vp_mode(self,index): self.active_vp=index; self.vp_buttons[index].setText("画像上をクリック…")
+    def clear_vp(self,index): self.vps[index]=None; self.vp_buttons[index].setText(f"VP{index+1}を指定"); self.canvas.update()
+    def refresh_vp_labels(self):
+        for i,b in enumerate(self.vp_buttons): b.setText(f"VP{i+1}を再指定" if self.vps[i] else f"VP{i+1}を指定")
+    def pick_color(self,attr):
+        color=QColorDialog.getColor(QColor(getattr(self,attr)),self,"色を選択")
+        if color.isValid(): setattr(self,attr,color.name()); self.canvas.update()
+    def export_csv(self):
+        if not self.current_path: return
+        destination,_=QFileDialog.getSaveFileName(self,"CSVを保存","movie_shot_analysis.csv","CSV (*.csv)")
+        if not destination: return
+        with open(destination,"w",newline="",encoding="utf-8-sig") as f:
+            writer=csv.writer(f); writer.writerow(["image","frame_left","frame_top","frame_right","frame_bottom","vp1","vp2","vp3"]); writer.writerow([str(self.current_path),*self.frame,*["" if v is None else f"{v[0]:.5f},{v[1]:.5f}" for v in self.vps]])
 
-        rbox=ttk.LabelFrame(right,text="色・太さ・透明度",padding=8); rbox.pack(fill="x")
-        self.cfg={"guide_color":"#35c96f","perspective_color":"#3485ff","eye_color":"#ff3d78","vp_color":"#ffd23f",
-                  "guide_width":2,"perspective_width":2,"eye_width":3,"vp_width":2,
-                  "guide_alpha":165,"line_alpha":120,"eye_alpha":210,"vp_alpha":255,"vp_size":9,
-                  "show_perspective":True,"show_eye":True,"show_vp":True,
-                  "guides":{k:False for k,_ in names}}
-        for k,n in [("guide_color","ガイドの色"),("perspective_color","パースの色"),("eye_color","アイレベルの色"),("vp_color","消失点○の色")]:
-            row=ttk.Frame(rbox); row.pack(fill="x",pady=2)
-            ttk.Label(row,text=n,width=16).pack(side="left")
-            b=tk.Button(row,width=3,text=" ",bg=self.cfg[k],command=lambda kk=k:self.choose_color(kk))
-            b.pack(side="left"); setattr(self,k+"_button",b)
-        self.add_scale(rbox,"ガイド太さ","guide_width",1,10)
-        self.add_scale(rbox,"パース太さ","perspective_width",1,10)
-        self.add_scale(rbox,"アイレベル太さ","eye_width",1,10)
-        self.add_scale(rbox,"消失点○サイズ","vp_size",3,30)
-        self.add_scale(rbox,"消失点○線太さ","vp_width",1,10)
-        self.add_scale(rbox,"ガイド透明度","guide_alpha",20,255)
-        self.add_scale(rbox,"パース透明度","line_alpha",20,255)
-        self.add_scale(rbox,"アイレベル透明度","eye_alpha",20,255)
-        self.add_scale(rbox,"消失点○透明度","vp_alpha",20,255)
 
-        abox=ttk.LabelFrame(right,text="分析結果",padding=8); abox.pack(fill="x",pady=8)
-        self.result=ttk.Label(abox,text="画像を読み込んでください",justify="left",wraplength=250)
-        self.result.pack(anchor="w")
-        ttk.Label(right,text="手動パース指定：ボタンを押した後、画像上で\n1本目の線の始点→終点→2本目の始点→終点\nの順に4回クリックしてください。",wraplength=270).pack(anchor="w")
-
-    def add_scale(self,parent,label,key,lo,hi):
-        row=ttk.Frame(parent); row.pack(fill="x",pady=1)
-        ttk.Label(row,text=label,width=16).pack(side="left")
-        var=tk.IntVar(value=self.cfg[key])
-        sc=ttk.Scale(row,from_=lo,to=hi,variable=var,command=lambda x,k=key,v=var:self.set_scale(k,v.get()))
-        sc.pack(side="left",fill="x",expand=True)
-        lab=ttk.Label(row,text=str(self.cfg[key]),width=4); lab.pack(side="right")
-        setattr(self,key+"_label",lab)
-    def set_scale(self,key,value):
-        value=int(round(float(value))); self.cfg[key]=value
-        if hasattr(self,key+"_label"): getattr(self,key+"_label").config(text=str(value))
-        self.refresh()
-
-    def choose_color(self,key):
-        c=colorchooser.askcolor(color=self.cfg[key],title="色を選択")
-        if c and c[1]:
-            self.cfg[key]=c[1]
-            getattr(self,key+"_button").config(bg=c[1])
-            self.refresh()
-
-    def setup_dnd(self):
-        if DND_FILES and hasattr(self.root,"drop_target_register"):
-            for widget in (self.root,self.drop_label,self.canvas):
-                widget.drop_target_register(DND_FILES)
-                widget.dnd_bind("<<Drop>>",self.on_drop)
-    def on_drop(self,event):
-        paths=self.root.tk.splitlist(event.data)
-        self.add_paths(paths)
-
-    def add_paths(self,paths):
-        found=[]
-        for raw in paths:
-            p=Path(raw)
-            if p.is_dir():
-                found += [x for x in sorted(p.rglob("*")) if x.is_file() and x.suffix.lower() in EXTS]
-            elif p.is_file() and p.suffix.lower() in EXTS:
-                found.append(p)
-        seen=set(self.files)
-        for p in found:
-            if p not in seen:
-                self.files.append(p); seen.add(p)
-        self.files.sort()
-        self.current_index=0
-        self.status.config(text=f"{len(self.files)}枚")
-        self.show_current()
-
-    def pick(self):
-        p=filedialog.askdirectory(title="画像フォルダを選択")
-        if p: self.add_paths([p])
-
-    def show_current(self):
-        if not self.files:
-            self.canvas.delete("all"); self.counter.config(text="0 / 0"); return
-        p=self.files[self.current_index]
-        try:
-            self.current_image=Image.open(p).convert("RGB")
-            self.fit_image()
-            self.counter.config(text=f"{self.current_index+1} / {len(self.files)}")
-            self.update_result()
-        except Exception as e:
-            messagebox.showerror("読み込みエラー",str(e))
-
-    def fit_image(self):
-        self.canvas.delete("all")
-        cw=max(200,self.canvas.winfo_width()); ch=max(200,self.canvas.winfo_height())
-        w,h=self.current_image.size
-        self.display_scale=min(cw/w,ch/h)
-        dw,dh=max(1,int(w*self.display_scale)),max(1,int(h*self.display_scale))
-        x=(cw-dw)//2; y=(ch-dh)//2
-        self.offset=(x,y)
-        disp=self.current_image.resize((dw,dh),Image.LANCZOS)
-        self.tkimg=ImageTk.PhotoImage(disp)
-        self.canvas.create_image(x,y,image=self.tkimg,anchor="nw",tags="img")
-        self.draw_preview_overlay()
-
-    def image_xy(self,event):
-        if not self.current_image:return None
-        x=(event.x-self.offset[0])/self.display_scale
-        y=(event.y-self.offset[1])/self.display_scale
-        w,h=self.current_image.size
-        if 0<=x<=w and 0<=y<=h:return x,y
-        return None
-
-    def canvas_click(self,event):
-        pt=self.image_xy(event)
-        if pt is None or not self.pending_points:return
-        self.pending_points.append(pt)
-        if len(self.pending_points)==4:
-            fam=self.active_family
-            l1=tuple(self.pending_points[:2]); l2=tuple(self.pending_points[2:])
-            self.vp_lines[fam]=[l1,l2]
-            vp=intersect(l1,l2)
-            if vp:
-                if len(self.vps)>fam:self.vps[fam]=vp
-                else:
-                    while len(self.vps)<fam:self.vps.append(None)
-                    self.vps.append(vp)
-            else:
-                while len(self.vps)<=fam:self.vps.append(None)
-                self.vps[fam]=None
-            self.pending_points=[]
-            self.vp_status.config(text=self.vp_text())
-            self.update_result()
-            self.draw_preview_overlay()
-        else:
-            self.draw_click_markers()
-
-    def start_vp(self,fam):
-        self.active_family=fam
-        self.pending_points=[]
-        self.vp_status.config(text=f"VP{fam+1}: 4点クリックしてください")
-    def clear_vps(self):
-        self.vp_lines=[[],[],[]]; self.vps=[]; self.pending_points=[]
-        self.vp_status.config(text="VP未指定"); self.update_result(); self.draw_preview_overlay()
-    def vp_text(self):
-        parts=[]
-        for i,v in enumerate(self.vps):
-            if v: parts.append(f"VP{i+1}: ({v[0]:.0f}, {v[1]:.0f})")
-        return " / ".join(parts) if parts else "VP未指定"
-
-    def draw_click_markers(self):
-        self.draw_preview_overlay()
-        for i,(x,y) in enumerate(self.pending_points):
-            sx=self.offset[0]+x*self.display_scale; sy=self.offset[1]+y*self.display_scale
-            self.canvas.create_oval(sx-5,sy-5,sx+5,sy+5,fill="#ffffff",outline="#ff3d78",width=2,tags="click")
-    def draw_preview_overlay(self):
-        if self.current_image is None:return
-        # Use a low-cost image overlay then display.
-        cfg=dict(self.cfg); cfg["guides"]={k:v.get() for k,v in self.guide_vars.items()}
-        cfg["show_p"]=self.show_p.get(); cfg["show_eye"]=self.show_eye.get(); cfg["show_vp"]=self.show_vp.get()
-        cfg["show_perspective"]=cfg["show_p"]; cfg["show_eye"]=cfg["show_eye"]; cfg["show_vp"]=cfg["show_vp"]
-        ana={"vps":[v for v in self.vps if v]}
-        over=draw_overlay(self.current_image,cfg,ana)
-        cw=max(200,self.canvas.winfo_width()); ch=max(200,self.canvas.winfo_height())
-        w,h=over.size; sc=min(cw/w,ch/h)
-        dw,dh=max(1,int(w*sc)),max(1,int(h*sc)); x=(cw-dw)//2;y=(ch-dh)//2
-        self.display_scale=sc; self.offset=(x,y)
-        self.tkimg=ImageTk.PhotoImage(over.resize((dw,dh),Image.LANCZOS))
-        self.canvas.delete("all"); self.canvas.create_image(x,y,image=self.tkimg,anchor="nw",tags="img")
-        for i,(x0,y0,x1,y1) in enumerate(sum(self.vp_lines,[])):
-            self.canvas.create_line(x+(x0)*sc,y+(y0)*sc,x+(x1)*sc,y+(y1)*sc,fill="#ffffff",width=1,tags="click")
-        for x0,y0 in self.pending_points:
-            self.canvas.create_oval(x+x0*sc-5,y+y0*sc-5,x+x0*sc+5,y+y0*sc+5,fill="#ffffff",outline="#ff3d78",width=2,tags="click")
-
-    def refresh(self):
-        self.draw_preview_overlay()
-        self.update_result()
-    def update_result(self):
-        if self.current_image is None:
-            self.result.config(text="画像を読み込んでください"); return
-        a=estimate_from_vps(self.current_image,self.vps)
-        self.result.config(text=f"透視タイプ：{a['perspective']}\nアイレベル：{a['eye']}\n消失点：{self.vp_text()}\n推定焦点距離：{a['focal']}\n推定水平画角：{a['fov']}")
-
-    def prev(self):
-        if self.files:
-            self.current_index=(self.current_index-1)%len(self.files)
-            self.vp_lines=[[],[],[]]; self.vps=[]; self.pending_points=[]
-            self.show_current()
-    def next(self):
-        if self.files:
-            self.current_index=(self.current_index+1)%len(self.files)
-            self.vp_lines=[[],[],[]]; self.vps=[]; self.pending_points=[]
-            self.show_current()
-
-    def cfg_for_save(self):
-        c=dict(self.cfg); c["guides"]={k:v.get() for k,v in self.guide_vars.items()}
-        c["show_perspective"]=self.show_p.get(); c["show_eye"]=self.show_eye.get(); c["show_vp"]=self.show_vp.get()
-        return c
-
-    def save_current(self):
-        if self.current_image is None:return
-        p=self.files[self.current_index]
-        out=p.parent/"analyzed"; out.mkdir(exist_ok=True)
-        cfg=self.cfg_for_save()
-        over=draw_overlay(self.current_image,cfg,{"vps":[v for v in self.vps if v]})
-        outp=out/(p.stem+"_guided.jpg"); over.save(outp,quality=95)
-        messagebox.showinfo("保存完了",str(outp))
-
-    def batch(self):
-        if not self.files:
-            messagebox.showwarning("画像なし","画像またはフォルダをドロップしてください。"); return
-        cfg=self.cfg_for_save()
-        out=self.files[0].parent/"analyzed"
-        out.mkdir(exist_ok=True)
-        # Batch uses the currently specified VP geometry for all images only when VP coordinates
-        # are present. Composition guides are always applied independently per image.
-        self.progress["maximum"]=len(self.files); self.progress["value"]=0
-        rows=[]
-        for i,p in enumerate(self.files,1):
-            try:
-                im=Image.open(p).convert("RGB")
-                vps=[v for v in self.vps if v]
-                over=draw_overlay(im,cfg,{"vps":vps})
-                over.save(out/(p.stem+"_guided.jpg"),quality=95)
-                a=estimate_from_vps(im,vps)
-                rows.append([str(p),a["perspective"],a["focal"],a["fov"],a["eye"]])
-            except Exception as e:
-                rows.append([str(p),"ERROR",str(e),"",""])
-            self.progress["value"]=i; self.root.update_idletasks()
-        with open(out/"analysis.csv","w",newline="",encoding="utf-8-sig") as f:
-            cw=csv.writer(f); cw.writerow(["file","perspective","focal_35mm_est","horizontal_fov","eye_level"]); cw.writerows(rows)
-        messagebox.showinfo("完了",f"{len(self.files)}枚を処理しました。\n保存先：{out}")
-
-if __name__=="__main__":
-    if TkinterDnD:
-        root=TkinterDnD.Tk()
-    else:
-        root=tk.Tk()
-    App(root)
-    root.mainloop()
+if __name__ == "__main__":
+    app=QApplication(sys.argv); window=MovieShotAnalyzer(); window.show(); sys.exit(app.exec())
