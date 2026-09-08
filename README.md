@@ -1,8 +1,8 @@
-# Movie Shot Analyzer V5.2 — Movable Composition Guides
+# Movie Shot Analyzer V5.2.1 — Movable Composition Guides
 
 Windows / macOS (Apple Silicon) 共通ソースの構図分析ツールです。
 
-## V5.2: 追加構図ガイドを直接編集
+## V5.2.1: 追加構図ガイドを直接編集
 V5.1で追加した構図ガイドを、キャンバス上で直接調整できるようにしました。
 
 1. 使いたい追加構図ガイドをON
@@ -53,3 +53,10 @@ Balance / Unbalanced のように被写体の視覚重量を見ないと判定�
 
 ## macOS Apple Silicon
 `build_macos.sh` を用意しています。M4 Maxを含むApple Siliconを対象にしています。
+
+
+## V5.2.1 修正
+- 「追加ガイドを編集」を初期状態でONに変更しました。
+- 追加ガイドをクリックすると選択され、選択中のガイドだけ○ハンドルが表示されます。
+- 線を押したままドラッグで全体移動、○ドラッグで形状調整できます。
+- 何もない場所をクリックすると選択解除され、○が消えます。

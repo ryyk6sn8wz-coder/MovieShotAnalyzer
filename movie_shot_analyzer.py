@@ -440,7 +440,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.2'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.2.1'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.helper_v=[]; self.helper_h=[]; self.helper_free=[]; self.selected_helper=None
         self.selected_comp_guide=None
@@ -457,14 +457,14 @@ class MovieShotAnalyzer(QMainWindow):
             'pyramid': {'points': [(.5,.12),(.14,.88),(.86,.88)]},
         }
         self.helper_color='#36d1ff'; self.point_color='#ff3838'; self.frame_color='#20f26b'
-        self._build_ui(); self._style(); self.statusBar().showMessage('V5.2 — 可動構図ガイド版')
+        self._build_ui(); self._style(); self.statusBar().showMessage('V5.2.1 — 可動ガイド修正版')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
         root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.2 / 可動構図ガイド版'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.2.1 / 可動ガイド修正版'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -488,9 +488,10 @@ class MovieShotAnalyzer(QMainWindow):
         for w in (self.show_radiating,self.show_tunnel,self.show_golden_triangle,self.show_circle,self.show_cshape,self.show_vshape,self.show_double_diagonal,self.show_scurve,self.show_lshape,self.show_pyramid):
             w.toggled.connect(self.comp_guide_visibility_changed); c.addWidget(w)
         self.edit_comp_guides=QCheckBox('追加ガイドを編集（クリックで選択）')
+        self.edit_comp_guides.setChecked(True)
         self.edit_comp_guides.toggled.connect(self.comp_edit_toggled); c.addWidget(self.edit_comp_guides)
         self.reset_comp_btn=QPushButton('選択中ガイドを初期位置へ戻す'); self.reset_comp_btn.setEnabled(False); self.reset_comp_btn.clicked.connect(self.reset_selected_comp_guide); c.addWidget(self.reset_comp_btn)
-        ednote=QLabel('編集ONのときだけ、選択したガイドに○ハンドルを表示します。線をドラッグすると全体移動、○をドラッグすると形を調整できます。')
+        ednote=QLabel('初期状態で編集ONです。追加ガイドの線をクリックすると、そのガイドだけ○ハンドルが出ます。線をそのままドラッグ＝全体移動、○をドラッグ＝形を調整。空白をクリックすると○が消えます。')
         ednote.setObjectName('note'); ednote.setWordWrap(True); c.addWidget(ednote)
         kindnote=QLabel('※ Balance / Unbalanced などは固定線ではなく、後の「画像を見て判断する構図タイプ」解析に入れる予定です。')
         kindnote.setObjectName('note'); kindnote.setWordWrap(True); c.addWidget(kindnote)
