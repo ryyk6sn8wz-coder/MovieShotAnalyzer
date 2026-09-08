@@ -231,7 +231,7 @@ class ImageCanvas(QWidget):
             fc=QColor(self.owner.frame_color); fc.setAlpha(round(255*self.owner.frame_alpha.value()/100))
             q=QPen(fc); q.setWidthF(self.owner.frame_width.val()); q.setStyle(Qt.PenStyle.SolidLine)
             p.setPen(q); p.setBrush(Qt.BrushStyle.NoBrush); p.drawPolygon(poly)
-            if self.owner.manual_frame.isChecked():
+            if self.owner.manual_frame.isChecked() and not self.owner.lock_frame.isChecked():
                 # Photoshop-like transform handles: four corners + four side midpoints.
                 pts=self.frame_poly(); mids=[QPointF((pts[i].x()+pts[(i+1)%4].x())/2,(pts[i].y()+pts[(i+1)%4].y())/2) for i in range(4)]
                 p.setBrush(fc); hp=QPen(QColor('#0f1712')); hp.setWidthF(1.0); p.setPen(hp)
@@ -321,29 +321,68 @@ class ImageCanvas(QWidget):
         if r.width()<=1 or r.height()<=1:return (0.0,0.0)
         return ((pos.x()-r.left())/r.width(), (pos.y()-r.top())/r.height())
     def _draw_perspective(self,p):
+        """CLIP STUDIO風の手動パース定規。
+
+        各VPに2本の方向定規を持たせ、白い方向ハンドルをドラッグして
+        画面内の実線へ合わせる。線はVPを通って作業領域全体へ延長される。
+        """
         if self.pixmap is None:return
-        vp1=self._image_norm_to_point(*self.owner.vp1)
-        vp2=self._image_norm_to_point(*self.owner.vp2)
-        # Eye level / horizon. In linked mode both VPs share this Y coordinate.
+        vp_defs=(
+            ('VP1', self.owner.vp1, '#00d4ff', 'vp1'),
+            ('VP2', self.owner.vp2, '#ff4fa3', 'vp2'),
+            ('VP3', self.owner.vp3, '#7ee787', 'vp3'),
+        )
         eye_y=self.image_rect.top()+self.image_rect.height()*self.owner.eye_level_y
         ec=QColor('#ffe66d'); ec.setAlpha(210); ep=QPen(ec); ep.setWidthF(1.5); ep.setStyle(Qt.PenStyle.DashLine); p.setPen(ep)
         p.drawLine(QPointF(0,eye_y),QPointF(self.width(),eye_y))
-        # Rays run from each VP to actual-frame corners + side midpoints.
-        fp=self.frame_poly(); mids=[QPointF((fp[i].x()+fp[(i+1)%4].x())/2,(fp[i].y()+fp[(i+1)%4].y())/2) for i in range(4)]
-        targets=fp+mids
-        for vp,color in ((vp1,'#00d4ff'),(vp2,'#ff4fa3')):
-            c=QColor(color); c.setAlpha(175); pen=QPen(c); pen.setWidthF(1.2); p.setPen(pen)
-            for t in targets: p.drawLine(vp,t)
-        # Filled VP markers with compact labels.
-        for label,vp,color in (('VP1',vp1,'#00d4ff'),('VP2',vp2,'#ff4fa3')):
-            c=QColor(color); c.setAlpha(245); p.setBrush(c); p.setPen(Qt.PenStyle.NoPen); p.drawEllipse(QRectF(vp.x()-7,vp.y()-7,14,14))
-            p.setPen(QColor('#f5f7fa')); p.drawText(QRectF(vp.x()+10,vp.y()-12,48,24),Qt.AlignmentFlag.AlignVCenter,label)
+
+        # Perspective-ruler guide lines.  They are not tied to the green frame.
+        # Each white handle defines one line through its VP, and that line is
+        # extended far beyond the image; QPainter clips it to the workspace.
+        for label,xy,color,key in vp_defs:
+            vp=self._image_norm_to_point(*xy)
+            c=QColor(color); c.setAlpha(190); pen=QPen(c); pen.setWidthF(1.35); p.setPen(pen)
+            for hxy in self.owner.perspective_guides[key]:
+                hp=self._image_norm_to_point(*hxy)
+                dx=hp.x()-vp.x(); dy=hp.y()-vp.y(); ln=math.hypot(dx,dy)
+                if ln<1e-6: continue
+                scale=10000.0/ln
+                a=QPointF(vp.x()-dx*scale, vp.y()-dy*scale)
+                b=QPointF(vp.x()+dx*scale, vp.y()+dy*scale)
+                p.drawLine(a,b)
+
+        # VP markers.
+        for label,xy,color,key in vp_defs:
+            vp=self._image_norm_to_point(*xy)
+            c=QColor(color); c.setAlpha(245); p.setBrush(c); p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QRectF(vp.x()-7,vp.y()-7,14,14))
+            p.setPen(QColor('#f5f7fa')); p.drawText(QRectF(vp.x()+10,vp.y()-12,52,24),Qt.AlignmentFlag.AlignVCenter,label)
+
+        # Direction handles: white fill + the owning VP color as outline.
+        if self.owner.show_perspective_handles.isChecked():
+            for label,xy,color,key in vp_defs:
+                outline=QPen(QColor(color)); outline.setWidthF(2.0); p.setPen(outline); p.setBrush(QColor('#ffffff'))
+                for idx,hxy in enumerate(self.owner.perspective_guides[key]):
+                    hp=self._image_norm_to_point(*hxy)
+                    p.drawEllipse(QRectF(hp.x()-6,hp.y()-6,12,12))
+                    p.setPen(QColor('#f5f7fa'))
+                    p.drawText(QRectF(hp.x()+8,hp.y()-10,28,20),Qt.AlignmentFlag.AlignVCenter,str(idx+1))
+                    p.setPen(outline)
+
         p.setPen(QColor('#ffe66d')); p.drawText(QRectF(8,eye_y-23,120,20),Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter,'EYE LEVEL')
+
     def _perspective_hit(self,pos):
         if not self.owner.show_perspective.isChecked() or self.pixmap is None:return None
-        for name,xy in (('vp1',self.owner.vp1),('vp2',self.owner.vp2)):
+        # VP markers first.
+        for name,xy in (('vp1',self.owner.vp1),('vp2',self.owner.vp2),('vp3',self.owner.vp3)):
             pt=self._image_norm_to_point(*xy)
             if math.hypot(pos.x()-pt.x(),pos.y()-pt.y())<14:return ('perspective_vp',name)
+        # Then direction handles, similar to a perspective ruler control point.
+        if self.owner.show_perspective_handles.isChecked():
+            for name in ('vp1','vp2','vp3'):
+                for i,xy in enumerate(self.owner.perspective_guides[name]):
+                    pt=self._image_norm_to_point(*xy)
+                    if math.hypot(pos.x()-pt.x(),pos.y()-pt.y())<13:return ('perspective_guide',name,i)
         ey=self.image_rect.top()+self.image_rect.height()*self.owner.eye_level_y
         if abs(pos.y()-ey)<8:return ('eye_level',)
         return None
@@ -368,7 +407,7 @@ class ImageCanvas(QWidget):
         if phit:return phit
         # Transform handles have top priority, but the frame interior is checked last
         # so helper lines remain directly draggable even while free-transform is enabled.
-        if self.owner.manual_frame.isChecked():
+        if self.owner.manual_frame.isChecked() and not self.owner.lock_frame.isChecked():
             pts=self.frame_poly()
             for i,pt in enumerate(pts):
                 if math.hypot(pos.x()-pt.x(),pos.y()-pt.y()) < 13: return ('frame_corner',i)
@@ -398,7 +437,7 @@ class ImageCanvas(QWidget):
             if self._dist_to_segment(pos,self.npt(fr,q,0),self.npt(fr,q,1))<tol:return ('v',i)
         for i,q in enumerate(self.owner.helper_h):
             if self._dist_to_segment(pos,self.npt(fr,0,q),self.npt(fr,1,q))<tol:return ('h',i)
-        if self.owner.manual_frame.isChecked() and self._frame_clip_path().contains(pos):
+        if self.owner.manual_frame.isChecked() and not self.owner.lock_frame.isChecked() and self._frame_clip_path().contains(pos):
             return ('frame_move',)
         return None
     def _update_cursor(self,pos):
@@ -406,7 +445,7 @@ class ImageCanvas(QWidget):
         if not hit:
             self.unsetCursor(); return
         typ=hit[0]
-        if typ=='perspective_vp': self.setCursor(Qt.CursorShape.SizeAllCursor)
+        if typ in ('perspective_vp','perspective_guide'): self.setCursor(Qt.CursorShape.SizeAllCursor)
         elif typ=='eye_level': self.setCursor(Qt.CursorShape.SizeVerCursor)
         elif typ=='frame_corner': self.setCursor(Qt.CursorShape.SizeFDiagCursor)
         elif typ=='frame_edge':
@@ -425,9 +464,9 @@ class ImageCanvas(QWidget):
             self.owner.selected_comp_guide=None; self.owner.reset_comp_btn.setEnabled(False); self.update()
         if hit:
             typ=hit[0]
-            if typ in ('perspective_vp','eye_level'):
+            if typ in ('perspective_vp','perspective_guide','eye_level'):
                 self._drag_start=e.position()
-                self._persp_drag_orig=(tuple(self.owner.vp1),tuple(self.owner.vp2),float(self.owner.eye_level_y))
+                self._persp_drag_orig=(tuple(self.owner.vp1),tuple(self.owner.vp2),tuple(self.owner.vp3),float(self.owner.eye_level_y))
             if typ in ('comp_handle','comp_line'):
                 self.owner.selected_comp_guide=hit[1]; self.owner.reset_comp_btn.setEnabled(True); self.owner.selected_helper=None; self.owner.update_helper_buttons(); self.update()
                 if typ=='comp_line' or (typ=='comp_handle' and hit[1]=='tunnel' and hit[2]>=4):
@@ -449,12 +488,20 @@ class ImageCanvas(QWidget):
             # Allow off-image VPs. Bounds keep the marker recoverable in the workspace.
             nx=max(-3.0,min(4.0,nx)); ny=max(-2.0,min(3.0,ny))
             if name=='vp1': self.owner.vp1=(nx,ny)
-            else: self.owner.vp2=(nx,ny)
-            if self.owner.link_vps_eye.isChecked():
+            elif name=='vp2': self.owner.vp2=(nx,ny)
+            else: self.owner.vp3=(nx,ny)
+            # In 2-point perspective VP1/VP2 lie on the eye level. VP3 is
+            # intentionally independent for vertical convergence.
+            if self.owner.link_vps_eye.isChecked() and name in ('vp1','vp2'):
                 self.owner.eye_level_y=ny
                 if name=='vp1': self.owner.vp2=(self.owner.vp2[0],ny)
                 else: self.owner.vp1=(self.owner.vp1[0],ny)
             self.owner.update_perspective_labels()
+        elif typ=='perspective_guide':
+            name,i=self.drag_item[1],self.drag_item[2]
+            nx,ny=self._point_to_image_norm(pos)
+            nx=max(-3.0,min(4.0,nx)); ny=max(-2.0,min(3.0,ny))
+            guides=list(self.owner.perspective_guides[name]); guides[i]=(nx,ny); self.owner.perspective_guides[name]=guides
         elif typ=='eye_level':
             _,ny=self._point_to_image_norm(pos); ny=max(-2.0,min(3.0,ny)); self.owner.eye_level_y=ny
             if self.owner.link_vps_eye.isChecked():
@@ -536,15 +583,16 @@ class ImageCanvas(QWidget):
         self.update()
     def mouseReleaseEvent(self,e):
         if self.drag_item and self.drag_item[0].startswith('frame_'): self.owner.save_frame()
-        if self.drag_item and self.drag_item[0] in ('perspective_vp','eye_level'): self.owner.save_perspective()
+        if self.drag_item and self.drag_item[0] in ('perspective_vp','perspective_guide','eye_level'): self.owner.save_perspective()
         self.drag_item=None
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.3 Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.4 Perspective Ruler'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
-        self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.eye_level_y=0.50
+        self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50
+        self.perspective_guides={'vp1':[(.18,.28),(.18,.72)], 'vp2':[(.82,.28),(.82,.72)], 'vp3':[(.30,.22),(.70,.22)]}
         self.helper_v=[]; self.helper_h=[]; self.helper_free=[]; self.selected_helper=None
         self.selected_comp_guide=None
         self.comp_guides={
@@ -560,14 +608,14 @@ class MovieShotAnalyzer(QMainWindow):
             'pyramid': {'points': [(.5,.12),(.14,.88),(.86,.88)]},
         }
         self.helper_color='#36d1ff'; self.point_color='#ff3838'; self.frame_color='#20f26b'
-        self._build_ui(); self._style(); self.statusBar().showMessage('V5.3 — VP1 / VP2 / アイレベル')
+        self._build_ui(); self._style(); self.statusBar().showMessage('V5.4 — CLIP STUDIO風パース定規 / VP1・VP2・VP3')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
         root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.3 / パース解析 第1段階'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.4 / CLIP STUDIO風パース定規 + VP3'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -614,20 +662,22 @@ class MovieShotAnalyzer(QMainWindow):
 
         self.section(c,'実映像フレーム')
         self.show_frame=QCheckBox('フレーム枠を表示'); self.show_frame.setChecked(True); self.manual_frame=QCheckBox('自由変形ハンドルを使う'); self.manual_frame.setChecked(True); self.show_frame.toggled.connect(self.refresh); c.addWidget(self.show_frame); c.addWidget(self.manual_frame)
+        self.lock_frame=QCheckBox('緑フレームを固定（誤操作防止）'); self.lock_frame.setChecked(True); self.lock_frame.toggled.connect(self.refresh); c.addWidget(self.lock_frame)
         row=QHBoxLayout(); auto=QPushButton('黒帯を自動検出'); auto.clicked.connect(self.auto_frame); reset=QPushButton('画像全体に戻す'); reset.clicked.connect(self.reset_frame); row.addWidget(auto); row.addWidget(reset); c.addLayout(row)
         fg=QGridLayout(); fg.addWidget(QLabel('フレーム太さ'),0,0); self.frame_width=StepControl(0.5,8.0,2.0,0.5); self.frame_width.value.valueChanged.connect(self.refresh); fg.addWidget(self.frame_width,0,1)
         fg.addWidget(QLabel('フレーム透明度'),1,0); self.frame_alpha=QSlider(Qt.Orientation.Horizontal); self.frame_alpha.setRange(0,100); self.frame_alpha.setValue(100); self.frame_alpha.valueChanged.connect(self.refresh); fg.addWidget(self.frame_alpha,1,1)
         fcbtn=QPushButton('フレーム色'); fcbtn.clicked.connect(self.choose_frame_color); fg.addWidget(fcbtn,2,0,1,2); c.addLayout(fg)
-        fhint=QLabel('四隅＝X/Y自由移動（斜め可） / 辺中央＝その辺だけを垂直方向へ移動 / 枠内＝フレーム全体を移動'); fhint.setObjectName('note'); fhint.setWordWrap(True); c.addWidget(fhint)
+        fhint=QLabel('通常は「緑フレームを固定」をON推奨。フレームを直す時だけOFFにすると、四隅・辺中央・枠内ドラッグが使えます。'); fhint.setObjectName('note'); fhint.setWordWrap(True); c.addWidget(fhint)
 
-        self.section(c,'パース解析')
-        self.show_perspective=QCheckBox('VP1 / VP2 とアイレベルを表示'); self.show_perspective.setChecked(False); self.show_perspective.toggled.connect(self.refresh); c.addWidget(self.show_perspective)
+        self.section(c,'パース定規（手動）')
+        self.show_perspective=QCheckBox('VP1 / VP2 / VP3 とアイレベルを表示'); self.show_perspective.setChecked(False); self.show_perspective.toggled.connect(self.refresh); c.addWidget(self.show_perspective)
+        self.show_perspective_handles=QCheckBox('定規の方向ハンドル（白○）を表示'); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.toggled.connect(self.refresh); c.addWidget(self.show_perspective_handles)
         self.link_vps_eye=QCheckBox('VP1・VP2をアイレベルに連動'); self.link_vps_eye.setChecked(True); c.addWidget(self.link_vps_eye)
-        row=QHBoxLayout(); resetp=QPushButton('VPを初期位置へ'); resetp.clicked.connect(self.reset_perspective); row.addWidget(resetp); c.addLayout(row)
-        self.persp_label=QLabel('VP1: -0.30 / VP2: 1.30 / Eye: 0.50'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); c.addWidget(self.persp_label)
-        phint=QLabel('青=VP1、ピンク=VP2、黄=アイレベル。VPは○を直接ドラッグできます。画像外にも置けます。黄線を上下ドラッグするとアイレベルを調整します。'); phint.setObjectName('note'); phint.setWordWrap(True); c.addWidget(phint)
+        row=QHBoxLayout(); resetp=QPushButton('パース定規を初期位置へ'); resetp.clicked.connect(self.reset_perspective); row.addWidget(resetp); c.addLayout(row)
+        self.persp_label=QLabel('VP1 / VP2 / VP3 / Eye'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); c.addWidget(self.persp_label)
+        phint=QLabel('CLIP STUDIOのパース定規を参考にした操作です。色付き○=消失点、白○=方向ハンドル。白○を背景の直線に合わせると、そのVPを通る定規線の角度を個別に調整できます。VP3は縦方向の収束用で、アイレベルとは独立しています。緑フレームは固定ONなら動きません。'); phint.setObjectName('note'); phint.setWordWrap(True); c.addWidget(phint)
         row=QHBoxLayout(); row.addWidget(QLabel('作業領域')); self.workspace_scale=QSlider(Qt.Orientation.Horizontal); self.workspace_scale.setRange(100,400); self.workspace_scale.setValue(180); self.workspace_scale.valueChanged.connect(self.refresh); row.addWidget(self.workspace_scale,1); self.workspace_label=QLabel('180%'); self.workspace_label.setFixedWidth(46); self.workspace_scale.valueChanged.connect(lambda v:self.workspace_label.setText(f'{v}%')); row.addWidget(self.workspace_label); c.addLayout(row)
-        whint=QLabel('値を大きくすると画像が小さくなり、画面外の消失点を置くスペースが広がります。'); whint.setObjectName('note'); whint.setWordWrap(True); c.addWidget(whint)
+        whint=QLabel('値を大きくすると画像が小さくなり、画像外のVPを置く余白が広がります。'); whint.setObjectName('note'); whint.setWordWrap(True); c.addWidget(whint)
 
         self.section(c,'表示補正（元画像は変更しません）')
         self.sliders={}
@@ -664,8 +714,12 @@ class MovieShotAnalyzer(QMainWindow):
         try:
             with Image.open(p) as src:self.original=src.convert('RGB').copy()
             self.frame_quad=[tuple(q) for q in self.frames.get(str(p),[(0.,0.),(1.,0.),(1.,1.),(0.,1.)])]
-            pd=self.perspective_by_image.get(str(p),{'vp1':(-0.30,0.50),'vp2':(1.30,0.50),'eye':0.50})
-            self.vp1=tuple(pd['vp1']); self.vp2=tuple(pd['vp2']); self.eye_level_y=float(pd['eye']); self.update_perspective_labels()
+            pd=self.perspective_by_image.get(str(p),{'vp1':(-0.30,0.50),'vp2':(1.30,0.50),'vp3':(0.50,-0.65),'eye':0.50,
+                'guides':{'vp1':[(.18,.28),(.18,.72)],'vp2':[(.82,.28),(.82,.72)],'vp3':[(.30,.22),(.70,.22)]}})
+            self.vp1=tuple(pd.get('vp1',(-0.30,0.50))); self.vp2=tuple(pd.get('vp2',(1.30,0.50))); self.vp3=tuple(pd.get('vp3',(0.50,-0.65))); self.eye_level_y=float(pd.get('eye',0.50))
+            import copy
+            self.perspective_guides=copy.deepcopy(pd.get('guides',{'vp1':[(.18,.28),(.18,.72)],'vp2':[(.82,.28),(.82,.72)],'vp3':[(.30,.22),(.70,.22)]}))
+            self.update_perspective_labels()
             self.update_display(); self.file_label.setText(f'{p.name}\n{self.current_index+1} / {len(self.paths)}\n{self.original.width} × {self.original.height} px'); self.statusBar().showMessage(str(p))
         except Exception as ex:self.file_label.setText(f'読み込み失敗: {p.name}\n{ex}')
         self._update_nav()
@@ -695,12 +749,15 @@ class MovieShotAnalyzer(QMainWindow):
 
     def save_perspective(self):
         if 0<=self.current_index<len(self.paths):
-            self.perspective_by_image[str(self.paths[self.current_index])]={'vp1':tuple(self.vp1),'vp2':tuple(self.vp2),'eye':float(self.eye_level_y)}
+            import copy
+            self.perspective_by_image[str(self.paths[self.current_index])]={'vp1':tuple(self.vp1),'vp2':tuple(self.vp2),'vp3':tuple(self.vp3),'eye':float(self.eye_level_y),'guides':copy.deepcopy(self.perspective_guides)}
     def reset_perspective(self):
-        self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.eye_level_y=0.50; self.update_perspective_labels(); self.save_perspective(); self.refresh()
+        self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50
+        self.perspective_guides={'vp1':[(.18,.28),(.18,.72)], 'vp2':[(.82,.28),(.82,.72)], 'vp3':[(.30,.22),(.70,.22)]}
+        self.update_perspective_labels(); self.save_perspective(); self.refresh()
     def update_perspective_labels(self):
         if hasattr(self,'persp_label'):
-            self.persp_label.setText(f'VP1: ({self.vp1[0]:.2f}, {self.vp1[1]:.2f})  /  VP2: ({self.vp2[0]:.2f}, {self.vp2[1]:.2f})  /  Eye: {self.eye_level_y:.2f}')
+            self.persp_label.setText(f'VP1: ({self.vp1[0]:.2f}, {self.vp1[1]:.2f})  /  VP2: ({self.vp2[0]:.2f}, {self.vp2[1]:.2f})\nVP3: ({self.vp3[0]:.2f}, {self.vp3[1]:.2f})  /  Eye: {self.eye_level_y:.2f}')
 
     def comp_edit_toggled(self,on):
         if not on:
