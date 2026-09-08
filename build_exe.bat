@@ -1,8 +1,5 @@
 @echo off
-cd /d "%~dp0"
-python -m pip install -r requirements.txt
-python -m pip install pyinstaller
-pyinstaller --noconfirm --clean --onefile --windowed --name MovieShotAnalyzer movie_shot_analyzer.py
-echo.
-echo EXE: dist\MovieShotAnalyzer.exe
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt pyinstaller
+pyinstaller --noconfirm --clean --windowed --onedir --name MovieShotAnalyzer movie_shot_analyzer.py
 pause
