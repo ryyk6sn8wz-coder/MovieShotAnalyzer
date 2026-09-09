@@ -1,5 +1,5 @@
 from __future__ import annotations
-import math, sys
+import math, sys, json, os
 import random
 from pathlib import Path
 from PIL import Image, ImageEnhance
@@ -357,7 +357,7 @@ class ImageCanvas(QWidget):
             if not ready or not self.owner.vp_ray_visible.get(key,True):
                 continue
             vp=self._image_norm_to_point(*xy); count=max(2,int(self.owner.vp_ray_counts.get(key,12)))
-            rc=QColor(color); rc.setAlpha(155); rp=QPen(rc); rp.setWidthF(0.65); p.setPen(rp)
+            rc=QColor(color); rc.setAlpha(round(255*self.owner.perspective_alpha.value()/100)); rp=QPen(rc); rp.setWidthF(self.owner.perspective_line_width.value.value()); p.setPen(rp)
             radius=20000.0
 
             # Aim the fan through the actual image rectangle.  If a VP is far outside
@@ -403,7 +403,7 @@ class ImageCanvas(QWidget):
             if hasattr(self.owner,'show_perspective_grid') and self.owner.show_perspective_grid.isChecked():
                 p.save()
                 p.setClipPath(self._frame_clip_path())
-                gc=QColor(color); gc.setAlpha(105); gp=QPen(gc); gp.setWidthF(0.5); p.setPen(gp)
+                gc=QColor(color); gc.setAlpha(round(255*self.owner.perspective_alpha.value()/100)); gp=QPen(gc); gp.setWidthF(self.owner.perspective_line_width.value.value()); p.setPen(gp)
                 for a in angles:
                     dx=math.cos(a)*radius; dy=math.sin(a)*radius
                     p.drawLine(QPointF(vp.x()-dx,vp.y()-dy),QPointF(vp.x()+dx,vp.y()+dy))
@@ -416,8 +416,8 @@ class ImageCanvas(QWidget):
             for item in getattr(self.owner,'auto_detected_lines',[]):
                 try:
                     key,a0,b0=item[0],item[1],item[2]
-                    col=QColor(self.owner.vp_ray_colors.get(key,'#aab4c0')); col.setAlpha(95)
-                    pen=QPen(col); pen.setWidthF(0.65); p.setPen(pen)
+                    col=QColor(self.owner.vp_ray_colors.get(key,'#aab4c0')); col.setAlpha(round(255*self.owner.perspective_alpha.value()/100*0.60))
+                    pen=QPen(col); pen.setWidthF(max(0.5,self.owner.perspective_line_width.value.value()*0.75)); p.setPen(pen)
                     p.drawLine(self._image_norm_to_point(*a0),self._image_norm_to_point(*b0))
                 except Exception:
                     pass
@@ -437,16 +437,16 @@ class ImageCanvas(QWidget):
                 touched = bool(self.owner._persp_anchor_touched.get((key,li),set()))
                 if not complete and not touched and not drawing_this:
                     continue
-                c=QColor(color); c.setAlpha(235 if active else 85); pen=QPen(c)
+                c=QColor(color); base_alpha=self.owner.perspective_alpha.value()/100; c.setAlpha(round(255*base_alpha*(1.0 if active else 0.55))); pen=QPen(c)
                 # While positioning a calibration line, make it slightly bolder.
                 # Once the second line is confirmed, return it to the same thin weight
                 # as the first confirmed line while keeping the handles available.
-                pen.setWidthF(1.5 if (active and not complete) else 0.75); p.setPen(pen)
+                basew=self.owner.perspective_line_width.value.value(); pen.setWidthF(max(1.0,basew*2.0) if (active and not complete) else basew); p.setPen(pen)
                 a=self._image_norm_to_point(*line[0]); b=self._image_norm_to_point(*line[1]); p.drawLine(a,b)
                 dx=b.x()-a.x(); dy=b.y()-a.y(); ln=math.hypot(dx,dy)
                 if ln>1e-6:
-                    ext=10000.0/ln; cc=QColor(color); cc.setAlpha(95 if active else 35); xp=QPen(cc)
-                    xp.setWidthF(0.9 if (active and not complete) else .55); xp.setStyle(Qt.PenStyle.DashLine); p.setPen(xp)
+                    ext=10000.0/ln; cc=QColor(color); base_alpha=self.owner.perspective_alpha.value()/100; cc.setAlpha(round(255*base_alpha*(0.55 if active else 0.25))); xp=QPen(cc)
+                    xp.setWidthF(max(0.75,basew*1.5) if (active and not complete) else max(0.5,basew*0.75)); xp.setStyle(Qt.PenStyle.DashLine); p.setPen(xp)
                     p.drawLine(QPointF(a.x()-dx*ext,a.y()-dy*ext),QPointF(a.x()+dx*ext,a.y()+dy*ext))
                 if active and self.owner.show_perspective_handles.isChecked():
                     outline=QPen(QColor(color)); outline.setWidthF(2.0); p.setPen(outline); p.setBrush(QColor('#ffffff'))
@@ -732,6 +732,8 @@ class ImageCanvas(QWidget):
                     self.owner.solve_perspective_axis(name)
                     self.owner._persp_axis_complete[name]=True
                     self.owner.solve_perspective_axis(name)
+                    self.owner.perspective_source='manual'
+                    self.owner.learn_current_perspective('manual', axes=[name])
                     self.owner.advance_after_axis_complete(name)
                 self.owner.save_perspective(); self.owner.refresh()
             self.drag_item=None; return
@@ -752,6 +754,9 @@ class ImageCanvas(QWidget):
                         self.owner._persp_axis_complete[name]=True
                         self.owner.perspective_step=1
                         self.owner.solve_perspective_axis(name)
+                        mode='corrected_auto' if self.owner.perspective_source=='auto' else 'manual'
+                        self.owner.learn_current_perspective(mode, axes=[name])
+                        self.owner.perspective_source=mode
                         self.owner.update_perspective_panel_state()
             self.owner.save_perspective()
             self.owner.refresh()
@@ -759,9 +764,13 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.12 Auto Perspective + Smart Lens'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.14 Learning Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
+        self.learning_enabled=True
+        self.learning_data={'version':1,'samples':[],'feature_mean':{'length':0.16,'border':0.25,'vertical':0.25},'count':0}
+        self.perspective_source='manual'
+        self._load_learning_data()
         self.auto_detected_lines=[]
         self.auto_analysis_quality=None
         self.auto_analysis_note=''
@@ -787,14 +796,14 @@ class MovieShotAnalyzer(QMainWindow):
         self.vp_ray_colors={'vp1':'#00d4ff','vp2':'#ff4fa3','vp3':'#7ee787'}
         self.vp_ray_counts={'vp1':12,'vp2':12,'vp3':12}
         self.vp_ray_visible={'vp1':True,'vp2':True,'vp3':True}
-        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.12 — 自動パース解析 + 改良35mm換算レンズ推定')
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.14 — 手動パース学習 + 自動修正学習 + 個別透明度')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
         root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.12 / 自動パース＋レンズ'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.14 / 手動パース学習・建築優先＋レンズ'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -861,6 +870,12 @@ class MovieShotAnalyzer(QMainWindow):
             col=QPushButton('色'); col.setFixedWidth(42); col.clicked.connect(lambda checked=False,k=key:self.choose_vp_ray_color(k)); row.addWidget(col); self.vp_ray_color_buttons[key]=col
             lay.addLayout(row)
         self._update_vp_color_buttons()
+        row=QHBoxLayout(); row.addWidget(QLabel('パース線の太さ')); self.perspective_line_width=StepControl(0.5,5.0,0.5,0.5); self.perspective_line_width.value.valueChanged.connect(self.refresh); row.addWidget(self.perspective_line_width); lay.addLayout(row)
+        row=QHBoxLayout(); row.addWidget(QLabel('パース線の透明度')); self.perspective_alpha=QSlider(Qt.Orientation.Horizontal); self.perspective_alpha.setRange(0,100); self.perspective_alpha.setValue(70); self.perspective_alpha.valueChanged.connect(self.refresh); row.addWidget(self.perspective_alpha,1); self.perspective_alpha_label=QLabel('70%'); self.perspective_alpha_label.setFixedWidth(42); self.perspective_alpha.valueChanged.connect(lambda v:self.perspective_alpha_label.setText(f'{v}%')); row.addWidget(self.perspective_alpha_label); lay.addLayout(row)
+        self.section(lay,'学習')
+        self.learning_check=QCheckBox('手動・修正パースを学習に使用'); self.learning_check.setChecked(True); self.learning_check.toggled.connect(self.set_learning_enabled); lay.addWidget(self.learning_check)
+        self.learning_label=QLabel(f'学習データ：{self.learning_data.get("count",0)}件'); self.learning_label.setObjectName('note'); lay.addWidget(self.learning_label)
+        lr=QHBoxLayout(); learn_now=QPushButton('現在の手動パースを学習'); learn_now.clicked.connect(lambda:self.learn_current_perspective('manual')); lr.addWidget(learn_now); reset_learn=QPushButton('学習をリセット'); reset_learn.clicked.connect(self.reset_learning_data); lr.addWidget(reset_learn); lay.addLayout(lr)
         self.section(lay,'レンズ推定（35mm換算）')
         self.persp_lens=QLabel('VP1 と VP2 を確定すると推定を開始します。'); self.persp_lens.setObjectName('fileLabel'); self.persp_lens.setWordWrap(True); lay.addWidget(self.persp_lens)
         self.persp_lens_detail=QLabel('2点透視を主推定、VP3は検証として使用します。'); self.persp_lens_detail.setObjectName('note'); self.persp_lens_detail.setWordWrap(True); lay.addWidget(self.persp_lens_detail)
@@ -895,7 +910,7 @@ class MovieShotAnalyzer(QMainWindow):
 
         self.section(c,'線・交点の設定')
         grid=QGridLayout(); grid.addWidget(QLabel('線の太さ'),0,0); self.guide_width=StepControl(0.5,10.0,1.5,0.5); self.guide_width.value.valueChanged.connect(self.refresh); grid.addWidget(self.guide_width,0,1)
-        grid.addWidget(QLabel('線の透明度'),1,0); self.guide_alpha=QSlider(Qt.Orientation.Horizontal); self.guide_alpha.setRange(0,100); self.guide_alpha.setValue(90); self.guide_alpha.valueChanged.connect(self.refresh); grid.addWidget(self.guide_alpha,1,1); self.guide_alpha_label=QLabel('90%'); self.guide_alpha_label.setFixedWidth(38); self.guide_alpha.valueChanged.connect(lambda v:self.guide_alpha_label.setText(f'{v}%')); grid.addWidget(self.guide_alpha_label,1,2); c.addLayout(grid)
+        grid.addWidget(QLabel('構図ガイド透明度'),1,0); self.guide_alpha=QSlider(Qt.Orientation.Horizontal); self.guide_alpha.setRange(0,100); self.guide_alpha.setValue(90); self.guide_alpha.valueChanged.connect(self.refresh); grid.addWidget(self.guide_alpha,1,1); self.guide_alpha_label=QLabel('90%'); self.guide_alpha_label.setFixedWidth(38); self.guide_alpha.valueChanged.connect(lambda v:self.guide_alpha_label.setText(f'{v}%')); grid.addWidget(self.guide_alpha_label,1,2); c.addLayout(grid)
         self.show_points=QCheckBox('基本ガイドの交点○を表示'); self.show_points.setChecked(True); self.show_points.toggled.connect(self.refresh); c.addWidget(self.show_points)
         grid=QGridLayout(); grid.addWidget(QLabel('○サイズ'),0,0); self.point_size=StepControl(2.0,30.0,8.0,0.5); self.point_size.value.valueChanged.connect(self.refresh); grid.addWidget(self.point_size,0,1); c.addLayout(grid)
         row=QHBoxLayout(); pc=QPushButton('○の色'); pc.clicked.connect(self.choose_point_color); row.addWidget(pc); row.addWidget(QLabel('○透明度')); self.point_alpha=QSlider(Qt.Orientation.Horizontal); self.point_alpha.setRange(0,100); self.point_alpha.setValue(100); self.point_alpha.valueChanged.connect(self.refresh); row.addWidget(self.point_alpha,1); self.point_alpha_label=QLabel('100%'); self.point_alpha_label.setFixedWidth(42); self.point_alpha.valueChanged.connect(lambda v:self.point_alpha_label.setText(f'{v}%')); row.addWidget(self.point_alpha_label); c.addLayout(row)
@@ -1099,7 +1114,25 @@ class MovieShotAnalyzer(QMainWindow):
             a=(xa/w0,ya/h0); bb=(xb/w0,yb/h0)
             # Ignore near-frame-border detections; black bars and the green frame can dominate otherwise.
             mx=(a[0]+bb[0])*0.5; my=(a[1]+bb[1])*0.5
-            out.append({'a':a,'b':bb,'length':length/diag,'mid':(mx,my)})
+            
+            # Architecture prior: long, clean, frame-spanning straight edges dominate.
+            # Short/local edges (often people, clothing, hair and small props) are deliberately weak.
+            nlen=length/diag
+            border=min(mx,1.0-mx,my,1.0-my)
+            span=max(abs(a[0]-bb[0]),abs(a[1]-bb[1]))
+            structure=1.0 + min(2.5,nlen*8.0) + min(1.2,span*1.8)
+            if nlen < 0.085: structure*=0.35
+            elif nlen < 0.13: structure*=0.65
+            # Architectural frames often live near the image perimeter; modest bonus only.
+            if border < 0.18: structure*=1.12
+            # Personal adaptive prior learned from the user's accepted manual/corrected lines.
+            if self.learning_enabled and self.learning_data.get('count',0)>0:
+                pref=self.learning_data.get('feature_mean',{})
+                plen=float(pref.get('length',0.16)); pborder=float(pref.get('border',0.25))
+                length_fit=max(0.55,min(1.65,0.85+nlen/max(plen,0.05)*0.20))
+                border_fit=max(0.72,min(1.28,1.18-abs(border-pborder)*0.8))
+                structure*=length_fit*border_fit
+            out.append({'a':a,'b':bb,'length':nlen,'mid':(mx,my),'structure':structure,'border':border})
         out.sort(key=lambda z:z['length'],reverse=True)
         # Hough often returns duplicates. Remove almost-collinear, nearby duplicates.
         ded=[]
@@ -1125,7 +1158,7 @@ class MovieShotAnalyzer(QMainWindow):
             err=abs(dx*ry-dy*rx)/(dl*rl)  # sin angular residual
             # ~2.3 degrees. Longer segments carry more weight.
             if err<0.040:
-                w=s['length']*(1.0-err/0.040)
+                w=s['length']*s.get('structure',1.0)*(1.0-err/0.040)
                 score+=w; support.append(i); errs.append(err)
         if len(support)<2:return (0.0,[],1.0)
         # Reward spatially distributed support rather than several duplicate edges from one object.
@@ -1183,7 +1216,7 @@ class MovieShotAnalyzer(QMainWindow):
     def _choose_two_support_lines(self,cluster,segments):
         ids=cluster['support']
         if not ids:return None
-        ranked=sorted(ids,key=lambda i:segments[i]['length'],reverse=True)
+        ranked=sorted(ids,key=lambda i:segments[i]['length']*segments[i].get('structure',1.0),reverse=True)
         first=ranked[0]; second=None
         m0=segments[first]['mid']
         for i in ranked[1:]:
@@ -1194,6 +1227,63 @@ class MovieShotAnalyzer(QMainWindow):
         def line(i):
             s=segments[i]; return [tuple(s['a']),tuple(s['b'])]
         return [line(first),line(second)]
+
+    def _learning_path(self):
+        base=Path(os.getenv('APPDATA') or (Path.home()/'.movie_shot_analyzer'))
+        if os.getenv('APPDATA'): base=base/'MovieShotAnalyzer'
+        base.mkdir(parents=True,exist_ok=True)
+        return base/'perspective_learning.json'
+
+    def _load_learning_data(self):
+        try:
+            fp=self._learning_path()
+            if fp.exists():
+                data=json.loads(fp.read_text(encoding='utf-8'))
+                if isinstance(data,dict) and isinstance(data.get('samples',[]),list): self.learning_data=data
+        except Exception:
+            pass
+
+    def _save_learning_data(self):
+        try: self._learning_path().write_text(json.dumps(self.learning_data,ensure_ascii=False,indent=2),encoding='utf-8')
+        except Exception: pass
+
+    def set_learning_enabled(self,on):
+        self.learning_enabled=bool(on)
+        self.statusBar().showMessage('パース学習：ON' if on else 'パース学習：OFF',3000)
+
+    def reset_learning_data(self):
+        self.learning_data={'version':1,'samples':[],'feature_mean':{'length':0.16,'border':0.25,'vertical':0.25},'count':0}
+        self._save_learning_data()
+        if hasattr(self,'learning_label'): self.learning_label.setText('学習データ：0件')
+        self.statusBar().showMessage('パース学習データをリセットしました。',4000)
+
+    def _line_features(self,line):
+        (x1,y1),(x2,y2)=line; length=math.hypot(x2-x1,y2-y1)
+        mx=(x1+x2)/2; my=(y1+y2)/2; border=min(mx,1-mx,my,1-my)
+        ang=abs(math.degrees(math.atan2(y2-y1,x2-x1)))%180
+        vertical=max(0.0,1.0-min(abs(ang-90.0),90.0)/90.0)
+        return {'length':float(length),'border':float(max(0,min(.5,border))),'vertical':float(vertical),'angle':float(ang)}
+
+    def learn_current_perspective(self,source='manual',axes=None):
+        if not self.learning_enabled or self.original is None: return
+        axes=axes or [k for k in ('vp1','vp2','vp3') if self._persp_axis_complete.get(k)]
+        learned=[]
+        for key in axes:
+            if not self._persp_axis_complete.get(key): continue
+            lines=self.perspective_lines.get(key,[])
+            if len(lines)<2: continue
+            feats=[self._line_features(line) for line in lines[:2]]
+            sig=f"{key}:"+';'.join(f"{round(v,3)}" for line in lines[:2] for pt in line for v in pt)
+            if any(x.get('signature')==sig for x in self.learning_data.get('samples',[])): continue
+            learned.append({'source':source,'axis':key,'features':feats,'signature':sig})
+        if not learned: return
+        samples=self.learning_data.setdefault('samples',[]); samples.extend(learned); self.learning_data['samples']=samples[-500:]
+        allf=[f for sm in self.learning_data['samples'] for f in sm.get('features',[])]
+        if allf:
+            self.learning_data['feature_mean']={k:sum(float(f.get(k,0)) for f in allf)/len(allf) for k in ('length','border','vertical')}
+        self.learning_data['count']=len(self.learning_data['samples']); self._save_learning_data()
+        if hasattr(self,'learning_label'): self.learning_label.setText(f"学習データ：{self.learning_data['count']}件")
+        self.statusBar().showMessage(f"パースを学習しました（{source} / 合計 {self.learning_data['count']}件）",3500)
 
     def auto_analyze_perspective(self):
         """Automatic VP proposal. Results remain editable with the existing pencil/anchor UI."""
@@ -1242,14 +1332,20 @@ class MovieShotAnalyzer(QMainWindow):
                 for gi in c['support']:
                     ss=segments[gi]; self.auto_detected_lines.append((key,tuple(ss['a']),tuple(ss['b'])))
                 # Map score/support/error into a deliberately conservative percentage.
-                q=min(96.0,35.0+len(c['support'])*5.0+min(25.0,c['score']*45.0)-c['err']*250.0); qualities.append(q)
+                
+                # Conservative confidence: support count alone must never create 90%+ certainty.
+                lens=[segments[i]['length'] for i in c['support']]
+                long_support=sum(1 for x in lens if x>=0.12)
+                q=18.0 + min(28.0,long_support*7.0) + min(24.0,c['score']*20.0) - c['err']*320.0
+                q=max(5.0,min(88.0,q)); qualities.append(q)
             if self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2'):
                 x1,y1=self.vp1; x2,y2=self.vp2
                 self.eye_level_y=(y1+y2)/2.0 if abs(x2-x1)<1e-9 else y1+(0.5-x1)*(y2-y1)/(x2-x1)
             self.active_perspective_axis='vp3' if self._persp_axis_complete.get('vp3') else 'vp2'; self.perspective_step=1
+            self.perspective_source='auto'
             self.auto_analysis_quality=sum(qualities)/len(qualities) if qualities else 0.0
             axes=sum(1 for k in ('vp1','vp2','vp3') if self._persp_axis_complete.get(k))
-            self.auto_analysis_note=f'{axes}方向 / 検出線 {len(self.auto_detected_lines)}本'
+            self.auto_analysis_note=f'{axes}方向 / 建築・長線優先 / 検出線 {len(self.auto_detected_lines)}本'
             self.auto_analysis_label.setText(f'自動解析：信頼度 {self.auto_analysis_quality:.0f}% / {self.auto_analysis_note}')
             self.update_perspective_panel_state(); self.update_perspective_labels(); self.save_perspective(); self.refresh()
             self.statusBar().showMessage('自動解析完了。放射線と画像内グリッドを生成しました。必要なら白○または鉛筆入力で修正してください。',7000)
