@@ -1,19 +1,11 @@
-# Movie Shot Analyzer V5.16
+# Movie Shot Analyzer V5.17
 
-V5.16 focuses on a larger image workspace and safer automatic perspective candidates.
+V5.17 fixes keyboard image navigation and makes automatic perspective analysis more robust.
 
-## Changes
-- Left / Right arrow keys move to previous / next image.
-- F toggles an image-first view.
-- Left and right panels are narrower and each can be collapsed independently.
-- Existing `current / total` image count remains visible in the file information area.
-- Automatic perspective search now keeps more diverse off-screen VP hypotheses instead of greedily consuming the first local line cluster.
-- Long, frame-spanning architectural lines receive stronger weight; short local central edges receive lower weight.
-- A/B/C candidate mode, manual correction, learning, lens estimation, perspective line width/opacity, and composition-guide opacity remain available.
-- VP3 is still only adopted when vertical evidence is sufficiently strong.
-
-## Windows
-Run `run.bat` for source execution, or build with `build_exe.bat` / GitHub Actions.
-
-## macOS
-Run `build_macos.sh` on Apple Silicon or Intel macOS with Python installed.
+- Left / Right arrow keys now navigate images even when the image canvas has focus.
+- F toggles the image-priority view.
+- A/B/C perspective candidates are filtered so near-identical candidates are not shown as separate choices.
+- Automatic perspective analysis first uses strict architecture-priority detection, then falls back to a relaxed pass on sparse / low-contrast images.
+- If only one reliable direction is available, the app shows that result instead of appearing unresponsive.
+- Candidate state is reset when moving to a different image.
+- Manual perspective, learning, lens estimate, guide opacity and line-width controls are preserved.

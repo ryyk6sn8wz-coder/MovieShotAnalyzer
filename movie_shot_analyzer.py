@@ -9,7 +9,7 @@ try:
 except Exception:
     cv2=None
     np=None
-from PySide6.QtCore import QRectF, Qt, QPointF
+from PySide6.QtCore import QRectF, Qt, QPointF, QEvent
 from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QFileDialog, QGridLayout, QHBoxLayout,
@@ -115,15 +115,15 @@ class ImageCanvas(QWidget):
             self._focus_view_on=False
 
     def keyPressEvent(self,e):
+        # The canvas often owns keyboard focus. Forward navigation to the main window.
         key=e.key(); focus=QApplication.focusWidget()
-        # Keep arrow-key editing inside numeric/text controls and sliders.
         editing=isinstance(focus,(QDoubleSpinBox,QLineEdit,QSlider))
         if key==Qt.Key.Key_Left and not editing:
-            self.prev_image(); e.accept(); return
+            self.owner.prev_image(); e.accept(); return
         if key==Qt.Key.Key_Right and not editing:
-            self.next_image(); e.accept(); return
+            self.owner.next_image(); e.accept(); return
         if key==Qt.Key.Key_F and not editing:
-            self.toggle_focus_view(); e.accept(); return
+            self.owner.toggle_focus_view(); e.accept(); return
         super().keyPressEvent(e)
 
     def dragEnterEvent(self,e):
@@ -802,7 +802,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.16 Wide Viewer'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.17 Wide Viewer'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -839,10 +839,13 @@ class MovieShotAnalyzer(QMainWindow):
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
-        root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
+        root=QWidget(); self.setCentralWidget(root)
+        # Capture Left/Right/F before child widgets consume them. Numeric/text controls keep their own arrow behavior.
+        app=QApplication.instance()
+        if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.16 / 建築長線強化・ワイド表示・矢印操作'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.17 / キー操作修正・候補多様化・自動解析安定化'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1080,6 +1083,19 @@ class MovieShotAnalyzer(QMainWindow):
             self.left_toggle.setText('‹' if lv else '›'); self.right_toggle.setText('›' if rv else '‹')
             self._focus_view_on=False
 
+    def eventFilter(self,obj,event):
+        if event.type()==QEvent.Type.KeyPress and event.modifiers()==Qt.KeyboardModifier.NoModifier:
+            focus=QApplication.focusWidget()
+            editing=isinstance(focus,(QDoubleSpinBox,QLineEdit,QSlider))
+            if not editing:
+                if event.key()==Qt.Key.Key_Left:
+                    self.prev_image(); return True
+                if event.key()==Qt.Key.Key_Right:
+                    self.next_image(); return True
+                if event.key()==Qt.Key.Key_F:
+                    self.toggle_focus_view(); return True
+        return super().eventFilter(obj,event)
+
     def keyPressEvent(self,e):
         key=e.key(); focus=QApplication.focusWidget()
         # Keep arrow-key editing inside numeric/text controls and sliders.
@@ -1129,6 +1145,10 @@ class MovieShotAnalyzer(QMainWindow):
                 if self.auto_analysis_quality is None: self.auto_analysis_label.setText('自動解析：未実行')
                 else: self.auto_analysis_label.setText(f'自動解析：信頼度 {self.auto_analysis_quality:.0f}%'+(f' / {self.auto_analysis_note}' if self.auto_analysis_note else ''))
             self._persp_anchor_touched={}
+            # A/B/C candidates belong to the current analysis run; never carry stale candidates to another image.
+            self.auto_candidates=[]; self.auto_candidate_index=-1
+            for b in getattr(self,'auto_candidate_buttons',[]):
+                b.setEnabled(False); b.setChecked(False)
             self.active_perspective_axis='vp1'; self.perspective_step=1 if self._persp_axis_complete.get('vp1',False) else 0
             self.update_perspective_panel_state(); self.update_perspective_labels()
             self.update_display(); self.file_label.setText(f'{p.name}\n{self.current_index+1} / {len(self.paths)}\n{self.original.width} × {self.original.height} px'); self.statusBar().showMessage(str(p))
@@ -1241,16 +1261,16 @@ class MovieShotAnalyzer(QMainWindow):
             if len(ded)>=110: break
         return ded
 
-    def _vp_candidate_score(self,vp,segments):
+    def _vp_candidate_score(self,vp,segments,err_limit=0.040):
         vx,vy=vp; support=[]; score=0.0; errs=[]
         for i,s in enumerate(segments):
             mx,my=s['mid']; dx=s['b'][0]-s['a'][0]; dy=s['b'][1]-s['a'][1]
             dl=math.hypot(dx,dy); rx=vx-mx; ry=vy-my; rl=math.hypot(rx,ry)
             if dl<1e-8 or rl<1e-8: continue
             err=abs(dx*ry-dy*rx)/(dl*rl)  # sin angular residual
-            # ~2.3 degrees. Longer segments carry more weight.
-            if err<0.040:
-                w=s['length']*s.get('structure',1.0)*(1.0-err/0.040)
+            # Angular residual; relaxed mode widens this for low-contrast / sparse frames.
+            if err<err_limit:
+                w=s['length']*s.get('structure',1.0)*(1.0-err/err_limit)
                 score+=w; support.append(i); errs.append(err)
         if len(support)<2:return (0.0,[],1.0)
         # Reward spatially distributed support rather than several duplicate edges from one object.
@@ -1262,15 +1282,17 @@ class MovieShotAnalyzer(QMainWindow):
         score*=0.65+min(0.7,spread)
         return (score,support,sum(errs)/len(errs))
 
-    def _find_vp_clusters(self,segments,max_clusters=7):
-        """Find diverse VP hypotheses from long/structural lines without greedily consuming support.
-        This keeps off-screen architectural alternatives alive for A/B/C candidate generation.
-        """
-        if len(segments)<4:return []
-        seed_ids=[i for i,s in enumerate(segments) if s['length']>=0.095 or s.get('structure',1.0)>=1.75]
-        if len(seed_ids)<4: seed_ids=list(range(min(len(segments),90)))
-        seed_ids=seed_ids[:90]
+    def _find_vp_clusters(self,segments,max_clusters=9,relaxed=False):
+        """Find diverse VP hypotheses. Relaxed mode is a fallback for sparse/low-contrast frames."""
+        if len(segments)<2:return []
+        min_seed_len=0.070 if relaxed else 0.095
+        min_struct=1.40 if relaxed else 1.75
+        seed_ids=[i for i,s in enumerate(segments) if s['length']>=min_seed_len or s.get('structure',1.0)>=min_struct]
+        if len(seed_ids)<4: seed_ids=list(range(min(len(segments),110 if relaxed else 90)))
+        seed_ids=seed_ids[:110 if relaxed else 90]
         candidates=[]
+        min_cross=math.sin(math.radians(1.8 if relaxed else 3.0))
+        bound=14.0 if relaxed else 10.0
         for ii in range(len(seed_ids)):
             i=seed_ids[ii]; a=segments[i]
             adx=a['b'][0]-a['a'][0]; ady=a['b'][1]-a['a'][1]; al=math.hypot(adx,ady)
@@ -1279,37 +1301,36 @@ class MovieShotAnalyzer(QMainWindow):
                 bdx=b['b'][0]-b['a'][0]; bdy=b['b'][1]-b['a'][1]; bl=math.hypot(bdx,bdy)
                 if al<1e-9 or bl<1e-9:continue
                 sine=abs(adx*bdy-ady*bdx)/(al*bl)
-                if sine<math.sin(math.radians(3.0)):continue
+                if sine<min_cross:continue
                 ip=infinite_line_intersection(a['a'],a['b'],b['a'],b['b'])
                 if ip is None:continue
-                if not (-10.0<=ip[0]<=11.0 and -9.0<=ip[1]<=10.0):continue
+                if not (-bound<=ip[0]<=1+bound and -bound<=ip[1]<=1+bound):continue
                 candidates.append(ip)
         if not candidates:return []
-        if len(candidates)>1300:
-            step=max(1,len(candidates)//1300); candidates=candidates[::step][:1300]
-        scored=[]
+        cap=1800 if relaxed else 1300
+        if len(candidates)>cap:
+            step=max(1,len(candidates)//cap); candidates=candidates[::step][:cap]
+        scored=[]; err_limit=0.058 if relaxed else 0.040
         for vp in candidates:
-            sc,supp,err=self._vp_candidate_score(vp,segments)
-            if len(supp)<2 or sc<0.055:continue
-            # Prefer hypotheses backed by at least one genuinely long structural line.
-            long_support=sum(1 for gi in supp if segments[gi]['length']>=0.12)
-            if long_support==0: sc*=0.55
-            mids=[segments[gi]['mid'] for gi in supp[:20]]
+            sc,supp,err=self._vp_candidate_score(vp,segments,err_limit)
+            if len(supp)<2 or sc<(0.030 if relaxed else 0.055):continue
+            long_support=sum(1 for gi in supp if segments[gi]['length']>=(0.085 if relaxed else 0.12))
+            if long_support==0: sc*=0.60 if relaxed else 0.55
+            mids=[segments[gi]['mid'] for gi in supp[:24]]
             if mids:
                 xs=[m[0] for m in mids]; ys=[m[1] for m in mids]
                 distribution=(max(xs)-min(xs))+(max(ys)-min(ys))
-                sc*=0.82+min(0.45,distribution*0.45)
+                sc*=0.82+min(0.50,distribution*0.50)
             scored.append((sc,vp,supp,err))
         scored.sort(key=lambda x:x[0],reverse=True)
         clusters=[]
         for sc,vp,supp,err in scored:
-            # Non-max suppression in VP space; preserve meaningfully different off-screen solutions.
             duplicate=False
             for c in clusters:
                 d=math.hypot(vp[0]-c['vp'][0],vp[1]-c['vp'][1])
-                scale=0.18+0.035*max(math.hypot(*vp),math.hypot(*c['vp']))
+                scale=(0.12 if relaxed else 0.18)+0.03*max(math.hypot(*vp),math.hypot(*c['vp']))
                 overlap=len(set(supp)&set(c['support']))/max(1,min(len(supp),len(c['support'])))
-                if d<scale and overlap>0.45:
+                if d<scale and overlap>0.40:
                     duplicate=True; break
             if duplicate:continue
             angs=[]
@@ -1393,14 +1414,17 @@ class MovieShotAnalyzer(QMainWindow):
         if hasattr(self,'learning_label'): self.learning_label.setText(f"学習データ：{self.learning_data['count']}件")
         self.statusBar().showMessage(f"パースを学習しました（{source} / 合計 {self.learning_data['count']}件）",3500)
 
-    def _pair_candidate_score(self,a,b,segments):
+    def _pair_candidate_score(self,a,b,segments,relaxed=False):
         # Strong preference for two distinct, spatially distributed architectural directions.
         vx1,vy1=a['vp']; vx2,vy2=b['vp']
         sep=math.hypot(vx2-vx1,vy2-vy1)
-        if sep < 0.55: return -1e9
+        if sep < (0.30 if relaxed else 0.55): return -1e9
         shared=len(set(a['support']) & set(b['support']))
-        if shared: return -1e9
-        score=a['score']+b['score']
+        if shared:
+            if not relaxed or shared>1: return -1e9
+            score_overlap_penalty=0.35
+        else: score_overlap_penalty=0.0
+        score=a['score']+b['score']-score_overlap_penalty
         score += min(0.9,sep*0.20)
         # Two perspective families converging inside the busy center are often local object/person edges.
         for vx,vy in ((vx1,vy1),(vx2,vy2)):
@@ -1421,31 +1445,43 @@ class MovieShotAnalyzer(QMainWindow):
             else: score-=0.5
         return score
 
-    def _build_auto_candidates(self,segments,clusters):
-        # VP3 is excluded from horizontal pairing only when vertical evidence is genuinely strong.
+    def _build_auto_candidates(self,segments,clusters,relaxed=False):
+        """Build up to three genuinely different A/B/C solutions, not three near-duplicates."""
         vertical=[]; horizontal=[]
         for c in clusters:
-            longv=sum(1 for i in c['support'] if segments[i]['length']>=0.10)
-            if c['vertical_dev']<=10.0 and len(c['support'])>=3 and longv>=2:
+            longv=sum(1 for i in c['support'] if segments[i]['length']>=(0.085 if relaxed else 0.10))
+            if c['vertical_dev']<=(12.0 if relaxed else 10.0) and len(c['support'])>=2 and longv>=1:
                 vertical.append(c)
             else: horizontal.append(c)
         if len(horizontal)<2: horizontal=clusters[:]
         pairs=[]
         for i in range(len(horizontal)):
             for j in range(i+1,len(horizontal)):
-                sc=self._pair_candidate_score(horizontal[i],horizontal[j],segments)
+                sc=self._pair_candidate_score(horizontal[i],horizontal[j],segments,relaxed)
                 if sc>-1e8: pairs.append((sc,horizontal[i],horizontal[j]))
         pairs.sort(key=lambda x:x[0],reverse=True)
         out=[]
-        for sc,a,b in pairs[:3]:
+        def similar_pair(item,other):
+            a1,a2=item['vp1']['vp'],item['vp2']['vp']; b1,b2=other['vp1']['vp'],other['vp2']['vp']
+            direct=max(math.hypot(a1[0]-b1[0],a1[1]-b1[1]),math.hypot(a2[0]-b2[0],a2[1]-b2[1]))
+            support_a=set(item['vp1']['support'])|set(item['vp2']['support'])
+            support_b=set(other['vp1']['support'])|set(other['vp2']['support'])
+            overlap=len(support_a&support_b)/max(1,min(len(support_a),len(support_b)))
+            return direct<0.30 or (direct<0.55 and overlap>0.62)
+        for sc,a,b in pairs:
             hs=sorted((a,b),key=lambda c:c['vp'][0])
             item={'vp1':hs[0],'vp2':hs[1],'score':sc}
-            # Adopt VP3 only with strong evidence and only if it is not one of the horizontal families.
             if vertical:
                 v=max(vertical,key=lambda c:c['score'])
-                if v not in hs and v['vertical_dev']<=8.0 and v['err']<=0.028:
+                if v not in hs and v['vertical_dev']<=(10.0 if relaxed else 8.0) and v['err']<=(0.045 if relaxed else 0.028):
                     item['vp3']=v
+            if any(similar_pair(item,o) for o in out): continue
             out.append(item)
+            if len(out)>=3: break
+        # Sparse frames: still expose one-direction hypotheses instead of appearing to do nothing.
+        if not out and clusters:
+            for c in clusters[:3]:
+                out.append({'vp1':c,'score':c['score'],'single':True})
         return out
 
     def apply_auto_candidate(self,index):
@@ -1495,13 +1531,21 @@ class MovieShotAnalyzer(QMainWindow):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             segments=self._detect_segments_cv(); self._last_auto_segments=segments
-            clusters=self._find_vp_clusters(segments,7)
-            self.auto_candidates=self._build_auto_candidates(segments,clusters)
+            clusters=self._find_vp_clusters(segments,10,False)
+            self.auto_candidates=self._build_auto_candidates(segments,clusters,False)
+            relaxed_used=False
+            if not self.auto_candidates or (len(self.auto_candidates)==1 and self.auto_candidates[0].get('single')):
+                relaxed_clusters=self._find_vp_clusters(segments,12,True)
+                relaxed_candidates=self._build_auto_candidates(segments,relaxed_clusters,True)
+                if len(relaxed_candidates)>len(self.auto_candidates):
+                    self.auto_candidates=relaxed_candidates; relaxed_used=True
             for i,b in enumerate(getattr(self,'auto_candidate_buttons',[])): b.setEnabled(i<len(self.auto_candidates))
             if not self.auto_candidates:
-                self.auto_detected_lines=[]; self.auto_analysis_quality=0.0; self.auto_analysis_note='有効な建築パース候補なし'
-                self.auto_analysis_label.setText('自動解析：候補なし / 手動入力を使用してください')
-                self.statusBar().showMessage('自動解析：信頼できる2方向を作れませんでした。無理にVPを生成しません。',7000); self.refresh(); return
+                self.auto_detected_lines=[]; self.auto_analysis_quality=0.0; self.auto_analysis_note=f'候補なし / 検出線 {len(segments)}本'
+                self.auto_analysis_label.setText(f'自動解析：候補なし / 検出線 {len(segments)}本 / 手動入力を使用')
+                self.statusBar().showMessage(f'自動解析：直線は {len(segments)} 本検出しましたが、信頼できるVP候補を作れませんでした。',8000); self.refresh(); return
+            if relaxed_used:
+                self.statusBar().showMessage('通常条件では候補が不足したため、低コントラスト用の緩和解析を使用しました。',5000)
             self.apply_auto_candidate(0)
             self.statusBar().showMessage(f'自動解析完了：{len(self.auto_candidates)}候補。A/B/Cを切り替えて最も合うものを選べます。',7000)
         except Exception as ex:
