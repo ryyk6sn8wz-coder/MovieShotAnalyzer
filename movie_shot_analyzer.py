@@ -555,6 +555,56 @@ class ImageCanvas(QWidget):
         # (VP1 + VP2) are both solved.  This keeps the canvas clean while calibrating.
         base_pair_ready=(self.owner._persp_axis_complete.get('vp1',False)
                          and self.owner._persp_axis_complete.get('vp2',False))
+        # V5.32: VP3 at infinity still represents a valid direction family.
+        # Instead of a fan from a fake finite point, draw evenly spaced PARALLEL guides
+        # aligned to the average direction of the two user calibration lines.
+        if (base_pair_ready and self.owner._persp_axis_complete.get('vp3',False)
+                and getattr(self.owner,'vp3_at_infinity',False)
+                and self.owner.vp_ray_visible.get('vp3',True)):
+            lines=self.owner.perspective_lines.get('vp3',[])
+            if len(lines)>=2:
+                dirs=[]
+                for ln in lines[:2]:
+                    dx=(ln[1][0]-ln[0][0])*max(1.0,self.image_rect.width())
+                    dy=(ln[1][1]-ln[0][1])*max(1.0,self.image_rect.height())
+                    ll=math.hypot(dx,dy)
+                    if ll>1e-6:
+                        dx/=ll; dy/=ll
+                        # Make both direction vectors point to the same half-plane.
+                        if dirs and dx*dirs[0][0]+dy*dirs[0][1] < 0:
+                            dx=-dx; dy=-dy
+                        dirs.append((dx,dy))
+                if dirs:
+                    ux=sum(v[0] for v in dirs); uy=sum(v[1] for v in dirs)
+                    ul=max(1e-6,math.hypot(ux,uy)); ux/=ul; uy/=ul
+                    # Normal to the parallel-line family.
+                    nx=-uy; ny=ux
+                    r=self.image_rect
+                    corners=[QPointF(r.left(),r.top()),QPointF(r.right(),r.top()),
+                             QPointF(r.right(),r.bottom()),QPointF(r.left(),r.bottom())]
+                    projs=[c.x()*nx+c.y()*ny for c in corners]
+                    lo,hi=min(projs),max(projs)
+                    count=max(2,int(self.owner.vp_ray_counts.get('vp3',12)))
+                    col=QColor(self.owner.vp_ray_colors['vp3'])
+                    col.setAlpha(round(255*self.owner.perspective_alpha.value()/100))
+                    pen=QPen(col); pen.setWidthF(self.owner.perspective_line_width.value.value()); p.setPen(pen)
+                    radius=20000.0
+                    for i in range(count):
+                        t=lo+(hi-lo)*(i+0.5)/count
+                        # point on line n·p=t
+                        cx=nx*t; cy=ny*t
+                        a=QPointF(cx-ux*radius,cy-uy*radius)
+                        b=QPointF(cx+ux*radius,cy+uy*radius)
+                        p.drawLine(a,b)
+                    if hasattr(self.owner,'show_perspective_grid') and self.owner.show_perspective_grid.isChecked():
+                        p.save(); p.setClipPath(self._frame_clip_path())
+                        for i in range(count):
+                            t=lo+(hi-lo)*(i+0.5)/count
+                            cx=nx*t; cy=ny*t
+                            p.drawLine(QPointF(cx-ux*radius,cy-uy*radius),
+                                       QPointF(cx+ux*radius,cy+uy*radius))
+                        p.restore()
+
         for label,xy,color,key in vp_defs:
             ready = base_pair_ready and (key in ('vp1','vp2') or (self.owner._persp_axis_complete.get('vp3',False) and not getattr(self.owner,'vp3_at_infinity',False)))
             if not ready or not self.owner.vp_ray_visible.get(key,True):
@@ -825,6 +875,13 @@ class ImageCanvas(QWidget):
                 self._drag_start=pos; self._frame_drag_orig=[tuple(q) for q in self.owner.frame_quad]
 
     def mouseMoveEvent(self,e):
+        # V5.32: only VP3 gets lost-release recovery. VP1/VP2 retain V5.11 behavior.
+        if (self.drag_item and self.drag_item[0]=='perspective_draw'
+                and self.drag_item[1]=='vp3'
+                and not (e.buttons() & Qt.MouseButton.LeftButton)):
+            self._finish_vp3_pencil_stroke()
+            self._update_cursor(e.position())
+            return
         if not self.drag_item:
             self._update_cursor(e.position()); return
         fr=self.frame_rect(); typ=self.drag_item[0]; pos=e.position()
@@ -928,9 +985,50 @@ class ImageCanvas(QWidget):
             dx=max(-minx,min(1-maxx,dx)); dy=max(-miny,min(1-maxy,dy))
             self.owner.frame_quad=[(q[0]+dx,q[1]+dy) for q in orig]
         self.update()
+    def _finish_vp3_pencil_stroke(self):
+        """V5.32: robustly finalize only VP3 pencil strokes, including lost-release recovery."""
+        if not self.drag_item or self.drag_item[0]!='perspective_draw' or self.drag_item[1]!='vp3':
+            return False
+        name,li=self.drag_item[1],self.drag_item[2]
+        line=self.owner.perspective_lines[name][li]
+        # Judge in screen pixels so short distant vertical edges are still valid.
+        a=self._image_norm_to_point(*line[0]); b=self._image_norm_to_point(*line[1])
+        pixel_len=math.hypot(b.x()-a.x(),b.y()-a.y())
+
+        # Detach first. This prevents VP3 line 2 remaining attached to the cursor.
+        self.drag_item=None
+        if pixel_len < 1.0:
+            self.owner.refresh()
+            return True
+
+        self.owner._persp_anchor_touched[(name,li)]={0,1}
+        if li==0:
+            self.owner.begin_second_perspective_line(name)
+            self.owner.perspective_step=1
+            self.owner._persp_anchor_touched[(name,1)]=set()
+            self.owner.update_perspective_panel_state()
+        else:
+            self.owner.solve_perspective_axis(name)
+            self.owner._persp_axis_complete[name]=True
+            self.owner.solve_perspective_axis(name)
+            if hasattr(self.owner,'learn_current_perspective'):
+                try:
+                    self.owner.perspective_source='manual'
+                    self.owner.learn_current_perspective('manual',axes=[name])
+                except Exception:
+                    pass
+            self.owner.advance_after_axis_complete(name)
+
+        self.owner.save_perspective()
+        self.owner.refresh()
+        return True
+
     def mouseReleaseEvent(self,e):
         if self.drag_item and self.drag_item[0].startswith('frame_'): self.owner.save_frame()
         if self.drag_item and self.drag_item[0]=='perspective_draw':
+            if self.drag_item[1]=='vp3':
+                self._finish_vp3_pencil_stroke()
+                return
             name,li=self.drag_item[1],self.drag_item[2]
             line=self.owner.perspective_lines[name][li]
             dx=line[1][0]-line[0][0]; dy=line[1][1]-line[0][1]
@@ -981,7 +1079,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.31 VP3 Infinity Display Fix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.32 VP3 Parallel Guides Robust Confirm'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -1029,7 +1127,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.31 / VP3∞表示修正'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.32 / VP3平行ガイド・確定強化'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
