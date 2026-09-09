@@ -817,7 +817,60 @@ class ImageCanvas(QWidget):
                 fr=self.frame_rect(); self._drag_start=pos; self._drag_orig=self.owner.helper_free[hit[1]]
             elif typ in ('frame_edge','frame_move'):
                 self._drag_start=pos; self._frame_drag_orig=[tuple(q) for q in self.owner.frame_quad]
+    def _finish_perspective_pencil_stroke(self):
+        """Finalize the active pencil stroke exactly once and always leave draw mode."""
+        if not self.drag_item or self.drag_item[0] != 'perspective_draw':
+            return False
+        name,li=self.drag_item[1],self.drag_item[2]
+        try:
+            if li==1 and hasattr(self,'_v526_fixed_first_line'):
+                lines=[[tuple(pt) for pt in line] for line in self.owner.perspective_lines[name]]
+                lines[0]=[tuple(pt) for pt in self._v526_fixed_first_line]
+                self.owner.perspective_lines[name]=lines
+
+            line=self.owner.perspective_lines[name][li]
+            dx=line[1][0]-line[0][0]; dy=line[1][1]-line[0][1]
+            valid=math.hypot(dx,dy) >= 0.015
+
+            # Critical: leave drag mode BEFORE solving/changing axis.  No subsequent
+            # mouseMove can keep modifying line 2, even if Qt delivered release late.
+            self.drag_item=None
+            self._persp_draw_start=None
+            self.unsetCursor()
+
+            if not valid:
+                self.owner.refresh()
+                return True
+
+            self.owner._persp_anchor_touched[(name,li)]={0,1}
+            if li==0:
+                self.owner.begin_second_perspective_line(name)
+                self.owner.perspective_step=1
+                self.owner._persp_anchor_touched[(name,1)]=set()
+                self.owner.update_perspective_panel_state()
+            else:
+                # Line 2 is now immutable; solve once, mark complete, then advance.
+                self.owner.solve_perspective_axis(name)
+                self.owner._persp_axis_complete[name]=True
+                self.owner.perspective_source='manual'
+                self.owner.learn_current_perspective('manual', axes=[name])
+                self.owner.advance_after_axis_complete(name)
+
+            self.owner.save_perspective()
+            self.owner.refresh()
+            return True
+        finally:
+            if hasattr(self,'_v526_fixed_first_line'):
+                del self._v526_fixed_first_line
+
     def mouseMoveEvent(self,e):
+        # Windows/Qt can occasionally miss mouseRelease after a drag. If the physical
+        # left button is already up, finalize immediately instead of letting line 2
+        # remain attached to the pencil indefinitely.
+        if self.drag_item and self.drag_item[0]=='perspective_draw' and not (e.buttons() & Qt.MouseButton.LeftButton):
+            self._finish_perspective_pencil_stroke()
+            self._update_cursor(e.position())
+            return
         if not self.drag_item:
             self._update_cursor(e.position()); return
         fr=self.frame_rect(); typ=self.drag_item[0]; pos=e.position()
@@ -927,33 +980,7 @@ class ImageCanvas(QWidget):
     def mouseReleaseEvent(self,e):
         if self.drag_item and self.drag_item[0].startswith('frame_'): self.owner.save_frame()
         if self.drag_item and self.drag_item[0]=='perspective_draw':
-            name,li=self.drag_item[1],self.drag_item[2]
-            if li==1 and hasattr(self,'_v526_fixed_first_line'):
-                lines=[[tuple(pt) for pt in line] for line in self.owner.perspective_lines[name]]
-                lines[0]=[tuple(pt) for pt in self._v526_fixed_first_line]
-                self.owner.perspective_lines[name]=lines
-            line=self.owner.perspective_lines[name][li]
-            dx=line[1][0]-line[0][0]; dy=line[1][1]-line[0][1]
-            # Ignore accidental clicks; a real pencil stroke needs a measurable drag.
-            if math.hypot(dx,dy) >= 0.015:
-                self.owner._persp_anchor_touched[(name,li)]={0,1}
-                if li==0:
-                    self.owner.begin_second_perspective_line(name)
-                    self.owner.perspective_step=1
-                    self.owner._persp_anchor_touched[(name,1)]=set()
-                    self.owner.update_perspective_panel_state()
-                else:
-                    self.owner.solve_perspective_axis(name)
-                    self.owner._persp_axis_complete[name]=True
-                    self.owner.solve_perspective_axis(name)
-                    self.owner.perspective_source='manual'
-                    self.owner.learn_current_perspective('manual', axes=[name])
-                    self.owner.advance_after_axis_complete(name)
-                self.owner.save_perspective(); self.owner.refresh()
-            self.drag_item=None
-            if hasattr(self,'_v526_fixed_first_line'):
-                del self._v526_fixed_first_line
-            self.unsetCursor()
+            self._finish_perspective_pencil_stroke()
             return
         if self.drag_item and self.drag_item[0] in ('perspective_vp','perspective_anchor','eye_level'):
             if self.drag_item[0]=='perspective_anchor':
@@ -982,7 +1009,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.26 Manual Perspective Fix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.26.1 Manual Perspective Release Fix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -1030,7 +1057,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.26 / 手動パース2本目固定修正'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.26.1 / 手動パース2本目終了修正'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
