@@ -647,7 +647,10 @@ class ImageCanvas(QWidget):
                 basew=self.owner.perspective_line_width.value.value(); pen.setWidthF(max(1.0,basew*2.0) if (active and not complete) else basew); p.setPen(pen)
                 a=self._image_norm_to_point(*line[0]); b=self._image_norm_to_point(*line[1]); p.drawLine(a,b)
                 dx=b.x()-a.x(); dy=b.y()-a.y(); ln=math.hypot(dx,dy)
-                if ln>1e-6:
+                # When VP3 is infinity, the two green calibration segments are enough.
+                # Extending them across the workspace looks like a false finite VP3 grid.
+                suppress_extension=(key=='vp3' and complete and getattr(self.owner,'vp3_at_infinity',False))
+                if ln>1e-6 and not suppress_extension:
                     ext=10000.0/ln; cc=QColor(color); base_alpha=self.owner.perspective_alpha.value()/100; cc.setAlpha(round(255*base_alpha*(0.55 if active else 0.25))); xp=QPen(cc)
                     xp.setWidthF(max(0.75,basew*1.5) if (active and not complete) else max(0.5,basew*0.75)); xp.setStyle(Qt.PenStyle.DashLine); p.setPen(xp)
                     p.drawLine(QPointF(a.x()-dx*ext,a.y()-dy*ext),QPointF(a.x()+dx*ext,a.y()+dy*ext))
@@ -658,6 +661,9 @@ class ImageCanvas(QWidget):
         # solved VP markers only; unsolved defaults stay invisible.
         for label,xy,color,key in vp_defs:
             if not self.owner._persp_axis_complete.get(key,False):
+                continue
+            # VP3 at infinity has no finite point to mark.
+            if key=='vp3' and getattr(self.owner,'vp3_at_infinity',False):
                 continue
             vp=self._image_norm_to_point(*xy); c=QColor(color); c.setAlpha(245); p.setBrush(c); p.setPen(Qt.PenStyle.NoPen); p.drawEllipse(QRectF(vp.x()-7,vp.y()-7,14,14))
             p.setPen(QColor('#f5f7fa')); p.drawText(QRectF(vp.x()+10,vp.y()-12,58,24),Qt.AlignmentFlag.AlignVCenter,label)
@@ -975,7 +981,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.30 Restored V5.11 Manual Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.31 VP3 Infinity Display Fix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -1023,7 +1029,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.30 / V5.11手動パース復元'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.31 / VP3∞表示修正'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1241,7 +1247,10 @@ class MovieShotAnalyzer(QMainWindow):
         lab=self.active_perspective_axis.upper()
         if hasattr(self,'persp_step_label'):
             if self._persp_axis_complete.get(self.active_perspective_axis,False):
-                self.persp_step_label.setText(f'{lab} 完了：白○で微調整')
+                if self.active_perspective_axis=='vp3' and getattr(self,'vp3_at_infinity',False):
+                    self.persp_step_label.setText('VP3 完了：∞（垂直線ほぼ平行）・白○で微調整')
+                else:
+                    self.persp_step_label.setText(f'{lab} 完了：白○で微調整')
             elif self.perspective_step==0:
                 self.persp_step_label.setText(f'{lab} 1本目：短いエッジでもOK・ドラッグして基準線')
             else:
