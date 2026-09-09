@@ -1,5 +1,6 @@
 from __future__ import annotations
 import math, sys, json, os
+from concurrent.futures import ThreadPoolExecutor
 import random
 from pathlib import Path
 from PIL import Image, ImageEnhance
@@ -21,7 +22,7 @@ STRUCTURAL_LONG_LINE_BONUS = 1.55
 LOW_CONFIDENCE_VP_THRESHOLD = 0.30
 EYE_LEVEL_FORCE_HORIZONTAL = True
 
-from PySide6.QtCore import QRectF, Qt, QPointF, QEvent
+from PySide6.QtCore import QRectF, Qt, QPointF, QEvent, QTimer
 from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QFileDialog, QGridLayout, QHBoxLayout,
@@ -786,6 +787,9 @@ class ImageCanvas(QWidget):
             name=self.owner.active_perspective_axis; li=self.owner.perspective_step
             nx,ny=self._point_to_image_norm(pos)
             lines=[[tuple(pt) for pt in line] for line in self.owner.perspective_lines[name]]
+            if li==1:
+                # V5.26: freeze line 1 while line 2 is being drawn.
+                self._v526_fixed_first_line=[tuple(pt) for pt in lines[0]]
             lines[li]=[(nx,ny),(nx,ny)]
             self.owner.perspective_lines[name]=lines
             self.drag_item=('perspective_draw',name,li)
@@ -822,9 +826,12 @@ class ImageCanvas(QWidget):
             nx,ny=self._point_to_image_norm(pos)
             nx=max(-3.0,min(4.0,nx)); ny=max(-2.0,min(3.0,ny))
             lines=[[tuple(pt) for pt in line] for line in self.owner.perspective_lines[name]]
+            if li==1 and hasattr(self,'_v526_fixed_first_line'):
+                lines[0]=[tuple(pt) for pt in self._v526_fixed_first_line]
             lines[li]=[tuple(self._persp_draw_start),(nx,ny)]
             self.owner.perspective_lines[name]=lines
-            if li==1: self.owner.solve_perspective_axis(name)
+            # V5.26: solve only on mouse release. Live solving made the first guide
+            # appear attached to the pencil/VP while the second line was being drawn.
         elif typ=='perspective_vp':
             name=self.drag_item[1]; nx,ny=self._point_to_image_norm(pos)
             # Allow off-image VPs. Bounds keep the marker recoverable in the workspace.
@@ -921,6 +928,10 @@ class ImageCanvas(QWidget):
         if self.drag_item and self.drag_item[0].startswith('frame_'): self.owner.save_frame()
         if self.drag_item and self.drag_item[0]=='perspective_draw':
             name,li=self.drag_item[1],self.drag_item[2]
+            if li==1 and hasattr(self,'_v526_fixed_first_line'):
+                lines=[[tuple(pt) for pt in line] for line in self.owner.perspective_lines[name]]
+                lines[0]=[tuple(pt) for pt in self._v526_fixed_first_line]
+                self.owner.perspective_lines[name]=lines
             line=self.owner.perspective_lines[name][li]
             dx=line[1][0]-line[0][0]; dy=line[1][1]-line[0][1]
             # Ignore accidental clicks; a real pencil stroke needs a measurable drag.
@@ -939,7 +950,11 @@ class ImageCanvas(QWidget):
                     self.owner.learn_current_perspective('manual', axes=[name])
                     self.owner.advance_after_axis_complete(name)
                 self.owner.save_perspective(); self.owner.refresh()
-            self.drag_item=None; return
+            self.drag_item=None
+            if hasattr(self,'_v526_fixed_first_line'):
+                del self._v526_fixed_first_line
+            self.unsetCursor()
+            return
         if self.drag_item and self.drag_item[0] in ('perspective_vp','perspective_anchor','eye_level'):
             if self.drag_item[0]=='perspective_anchor':
                 name,li,ei=self.drag_item[1],self.drag_item[2],self.drag_item[3]
@@ -967,7 +982,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.24 Conditional Eye Level'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.26 Manual Perspective Fix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -1001,6 +1016,10 @@ class MovieShotAnalyzer(QMainWindow):
         self.vp_ray_counts={'vp1':12,'vp2':12,'vp3':12}
         self.vp_ray_visible={'vp1':True,'vp2':True,'vp3':True}
         self.export_render_mode=False
+        self.batch_export_running=False
+        self.batch_export_cancelled=False
+        self.batch_export_executor=ThreadPoolExecutor(max_workers=max(2,min(8,(os.cpu_count() or 4))))
+        self.auto_frame_on_load=True
         self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.16 — 建築長線強化 + ワイド表示 + ←→画像送り')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
@@ -1011,7 +1030,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.24 / EYE LEVELはVP1＋VP2確定後のみ表示'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.26 / 手動パース2本目固定修正'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1020,7 +1039,9 @@ class MovieShotAnalyzer(QMainWindow):
         self.section(c,'実映像フレーム')
         self.show_frame=QCheckBox('フレーム枠を表示'); self.show_frame.setChecked(True); self.manual_frame=QCheckBox('自由変形ハンドルを使う'); self.manual_frame.setChecked(True); self.show_frame.toggled.connect(self.refresh); c.addWidget(self.show_frame); c.addWidget(self.manual_frame)
         self.lock_frame=QCheckBox('緑フレームを固定（誤操作防止）'); self.lock_frame.setChecked(True); self.lock_frame.toggled.connect(self.refresh); c.addWidget(self.lock_frame)
+        self.auto_frame_check=QCheckBox('黒帯を自動検出してフレーム適用'); self.auto_frame_check.setChecked(True); c.addWidget(self.auto_frame_check)
         row=QHBoxLayout(); auto=QPushButton('黒帯を自動検出'); auto.clicked.connect(self.auto_frame); reset=QPushButton('画像全体に戻す'); reset.clicked.connect(self.reset_frame); row.addWidget(auto); row.addWidget(reset); c.addLayout(row)
+        apply_all=QPushButton('このフレームを全画像に適用'); apply_all.clicked.connect(self.apply_current_frame_to_all); c.addWidget(apply_all)
         fg=QGridLayout(); fg.addWidget(QLabel('フレーム太さ'),0,0); self.frame_width=StepControl(0.5,8.0,2.0,0.5); self.frame_width.value.valueChanged.connect(self.refresh); fg.addWidget(self.frame_width,0,1)
         fg.addWidget(QLabel('フレーム透明度'),1,0); self.frame_alpha=QSlider(Qt.Orientation.Horizontal); self.frame_alpha.setRange(0,100); self.frame_alpha.setValue(100); self.frame_alpha.valueChanged.connect(self.refresh); fg.addWidget(self.frame_alpha,1,1)
         fcbtn=QPushButton('フレーム色'); fcbtn.clicked.connect(self.choose_frame_color); fg.addWidget(fcbtn,2,0,1,2); c.addLayout(fg)
@@ -1033,7 +1054,9 @@ class MovieShotAnalyzer(QMainWindow):
 
         self.section(c,'画像書き出し')
         export_current=QPushButton('現在の画像を書き出し'); export_current.clicked.connect(self.export_current_image); c.addWidget(export_current)
-        export_batch=QPushButton('全画像を一括書き出し'); export_batch.clicked.connect(self.batch_export_images); c.addWidget(export_batch)
+        self.export_batch_button=QPushButton('全画像を一括書き出し'); self.export_batch_button.clicked.connect(self.batch_export_images); c.addWidget(self.export_batch_button)
+        self.export_cancel_button=QPushButton('一括書き出しをキャンセル'); self.export_cancel_button.clicked.connect(self.cancel_batch_export); self.export_cancel_button.setEnabled(False); c.addWidget(self.export_cancel_button)
+        self.export_progress_label=QLabel('書き出し: 待機中'); self.export_progress_label.setObjectName('note'); self.export_progress_label.setWordWrap(True); c.addWidget(self.export_progress_label)
         export_note=QLabel('表示中の構図ガイド・パース・緑フレームを画像に重ねてPNG保存します。EYE LEVEL/VP HORIZONはVP1＋VP2確定時のみ出力。編集用ハンドルは出力しません。'); export_note.setObjectName('note'); export_note.setWordWrap(True); c.addWidget(export_note)
         c.addStretch(1)
         scroll=QScrollArea(); scroll.setObjectName('controlScroll'); scroll.setWidgetResizable(True); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); scroll.setWidget(cw); scroll.setMinimumWidth(235); scroll.setMaximumWidth(275); self.left_panel=scroll; outer.addWidget(scroll,0)
@@ -1305,7 +1328,14 @@ class MovieShotAnalyzer(QMainWindow):
         p=self.paths[self.current_index]
         try:
             with Image.open(p) as src:self.original=src.convert('RGB').copy()
-            self.frame_quad=[tuple(q) for q in self.frames.get(str(p),[(0.,0.),(1.,0.),(1.,1.),(0.,1.)])]
+            if str(p) in self.frames:
+                self.frame_quad=[tuple(q) for q in self.frames[str(p)]]
+            elif getattr(self,'auto_frame_check',None) is not None and self.auto_frame_check.isChecked():
+                l,t,r,b=detect_frame(self.original)
+                self.frame_quad=[(l,t),(r,t),(r,b),(l,b)]
+                self.frames[str(p)]=[tuple(q) for q in self.frame_quad]
+            else:
+                self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]
             pd=self.perspective_by_image.get(str(p),{'vp1':(-0.30,0.50),'vp2':(1.30,0.50),'vp3':(0.50,-0.65),'eye':0.50,'lines':self.default_perspective_lines()})
             self.vp1=tuple(pd.get('vp1',(-0.30,0.50))); self.vp2=tuple(pd.get('vp2',(1.30,0.50))); self.vp3=tuple(pd.get('vp3',(0.50,-0.65))); self.eye_level_y=float(pd.get('eye',0.50))
             import copy
@@ -1390,37 +1420,121 @@ class MovieShotAnalyzer(QMainWindow):
         self.statusBar().showMessage(f'画像を書き出しました: {destination}',6000)
 
     def batch_export_images(self):
+        if self.batch_export_running:
+            self.statusBar().showMessage('一括書き出しはすでに実行中です',4000); return
         if not self.paths:
             self.statusBar().showMessage('書き出す画像がありません',4000); return
         out=QFileDialog.getExistingDirectory(self,'全画像の保存先')
         if not out:return
         self.save_frame(); self.save_perspective()
-        old_index=self.current_index; failures=[]; saved=0
+        self.batch_export_running=True; self.batch_export_cancelled=False
+        self.export_batch_button.setEnabled(False); self.export_cancel_button.setEnabled(True)
+        self._batch_state={
+            'out':Path(out),'paths':list(self.paths),'pos':0,'saved':0,'failures':[],
+            'return_index':self.current_index,'futures':[]
+        }
+        self.export_progress_label.setText(f'書き出し: 0 / {len(self.paths)}')
+        self.statusBar().showMessage('一括書き出しを開始しました。操作は続けられます。')
+        QTimer.singleShot(0,self._batch_export_step)
+
+    @staticmethod
+    def _save_export_qimage(qimg,destination):
         try:
-            for idx,path in enumerate(self.paths):
-                self.current_index=idx; self.load_current(); QApplication.processEvents()
-                self.statusBar().showMessage(f'一括書き出し {idx+1}/{len(self.paths)}: {path.name}')
-                qimg=self._render_export_image()
-                dest=Path(out)/(path.stem+'_guides.png')
-                # Duplicate stems from different source folders get an index suffix instead of overwrite.
-                if dest.exists(): dest=Path(out)/(f'{path.stem}_{idx+1:04d}_guides.png')
-                if qimg is not None and qimg.save(str(dest),'PNG'): saved+=1
-                else: failures.append(path.name)
-                QApplication.processEvents()
+            ok=qimg.save(str(destination),'PNG')
+            return bool(ok), str(destination)
         except Exception as ex:
-            failures.append(str(ex))
+            return False, str(ex)
+
+    def _batch_export_step(self):
+        st=getattr(self,'_batch_state',None)
+        if not self.batch_export_running or st is None:return
+        if self.batch_export_cancelled or st['pos']>=len(st['paths']):
+            self._finish_batch_export(); return
+
+        # Snapshot the user's current image. Rendering remains on Qt's GUI thread for safety,
+        # while PNG compression/writing is sent to worker threads. One frame per event-loop
+        # turn keeps the application responsive instead of locking the UI for the whole batch.
+        user_index=self.current_index
+        idx=st['pos']; path=st['paths'][idx]
+        try:
+            self.current_index=idx
+            self.load_current()
+            qimg=self._render_export_image()
+            dest=st['out']/(path.stem+'_guides.png')
+            if dest.exists(): dest=st['out']/(f'{path.stem}_{idx+1:04d}_guides.png')
+            if qimg is None:
+                st['failures'].append(path.name)
+            else:
+                # Detach image bytes from the GUI backing store before worker-thread save.
+                detached=qimg.copy()
+                fut=self.batch_export_executor.submit(self._save_export_qimage,detached,dest)
+                st['futures'].append((path.name,fut))
+        except Exception as ex:
+            st['failures'].append(f'{path.name}: {ex}')
         finally:
-            self.current_index=old_index; self.load_current()
-        if failures:
-            QMessageBox.warning(self,'一括書き出し',f'{saved}枚を保存しました。\n{len(failures)}枚で失敗しました。\n\n'+'\n'.join(failures[:8]))
-        else:
-            QMessageBox.information(self,'一括書き出し',f'{saved}枚を保存しました。\n{out}')
-        self.statusBar().showMessage('全画像の一括書き出しが完了しました',6000)
+            # Restore whatever the user was looking at before this short render slice.
+            if 0<=user_index<len(self.paths):
+                self.current_index=user_index
+                self.load_current()
+
+        st['pos']+=1
+        self.export_progress_label.setText(f"書き出し: {st['pos']} / {len(st['paths'])}")
+        self.statusBar().showMessage(f"一括書き出し {st['pos']}/{len(st['paths'])} — バックグラウンド保存中")
+        QTimer.singleShot(1,self._batch_export_step)
+
+    def _finish_batch_export(self):
+        st=getattr(self,'_batch_state',None)
+        if st is None:return
+        # Poll workers without freezing the GUI; finish only after outstanding PNG writes complete.
+        pending=[x for x in st['futures'] if not x[1].done()]
+        if pending:
+            self.export_progress_label.setText(f"書き出し: {st['pos']} / {len(st['paths'])}（保存完了待ち {len(pending)}）")
+            QTimer.singleShot(50,self._finish_batch_export); return
+        for name,fut in st['futures']:
+            try:
+                ok,msg=fut.result()
+                if ok: st['saved']+=1
+                else: st['failures'].append(f'{name}: {msg}')
+            except Exception as ex:
+                st['failures'].append(f'{name}: {ex}')
+
+        cancelled=self.batch_export_cancelled
+        self.batch_export_running=False; self.batch_export_cancelled=False
+        self.export_batch_button.setEnabled(True); self.export_cancel_button.setEnabled(False)
+        self.export_progress_label.setText('書き出し: キャンセル済み' if cancelled else '書き出し: 完了')
+
+        box=QMessageBox(self)
+        box.setWindowTitle('一括書き出し')
+        box.setIcon(QMessageBox.Icon.Information if not st['failures'] else QMessageBox.Icon.Warning)
+        total=len(st['paths'])
+        box.setText(('キャンセルしました。' if cancelled else '一括書き出しが完了しました。')+f'\n{st["saved"]} / {total}枚を保存しました。')
+        detail=f'保存先:\n{st["out"]}'
+        if st['failures']:
+            detail+=f'\n\n失敗: {len(st["failures"])}枚\n'+'\n'.join(st['failures'][:8])
+        box.setInformativeText(detail)
+        box.setMinimumWidth(680)
+        box.exec()
+        self.statusBar().showMessage('一括書き出し処理を終了しました',6000)
+        self._batch_state=None
+
     def reset_display(self):
         for k in self.sliders:self.sliders[k].setValue(100)
     def auto_frame(self):
         if self.original is None:return
         l,t,r,b=detect_frame(self.original); self.frame_quad=[(l,t),(r,t),(r,b),(l,b)]; self.save_frame(); self.canvas.update(); self.statusBar().showMessage('黒帯フレームを自動検出しました。必要なら緑の四隅または辺をドラッグしてください。',5000)
+    def apply_current_frame_to_all(self):
+        if self.original is None or not self.paths:return
+        self.save_frame()
+        common=[tuple(q) for q in self.frame_quad]
+        for p in self.paths:
+            self.frames[str(p)]=[tuple(q) for q in common]
+        self.statusBar().showMessage(f'現在のフレームを全{len(self.paths)}画像に適用しました',5000)
+
+    def cancel_batch_export(self):
+        if self.batch_export_running:
+            self.batch_export_cancelled=True
+            self.export_progress_label.setText('書き出し: キャンセル処理中…')
+
     def reset_frame(self): self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.save_frame(); self.canvas.update()
     def save_frame(self):
         if 0<=self.current_index<len(self.paths): self.frames[str(self.paths[self.current_index])]=[tuple(q) for q in self.frame_quad]
