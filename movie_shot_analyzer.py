@@ -690,7 +690,11 @@ class ImageCanvas(QWidget):
                 touched = bool(self.owner._persp_anchor_touched.get((key,li),set()))
                 if not complete and not touched and not drawing_this:
                     continue
-                c=QColor(color); base_alpha=self.owner.perspective_alpha.value()/100; c.setAlpha(round(255*base_alpha*(1.0 if active else 0.55))); pen=QPen(c)
+                c=QColor(color); base_alpha=self.owner.perspective_alpha.value()/100
+                # V5.33: once a VP is complete, both calibration lines use the same
+                # confirmed appearance. Do not leave line 2 looking active.
+                line_alpha=(0.55 if complete else (1.0 if active else 0.55))
+                c.setAlpha(round(255*base_alpha*line_alpha)); pen=QPen(c)
                 # While positioning a calibration line, make it slightly bolder.
                 # Once the second line is confirmed, return it to the same thin weight
                 # as the first confirmed line while keeping the handles available.
@@ -704,7 +708,12 @@ class ImageCanvas(QWidget):
                     ext=10000.0/ln; cc=QColor(color); base_alpha=self.owner.perspective_alpha.value()/100; cc.setAlpha(round(255*base_alpha*(0.55 if active else 0.25))); xp=QPen(cc)
                     xp.setWidthF(max(0.75,basew*1.5) if (active and not complete) else max(0.5,basew*0.75)); xp.setStyle(Qt.PenStyle.DashLine); p.setPen(xp)
                     p.drawLine(QPointF(a.x()-dx*ext,a.y()-dy*ext),QPointF(a.x()+dx*ext,a.y()+dy*ext))
-                if (not getattr(self.owner,'export_render_mode',False)) and active and self.owner.show_perspective_handles.isChecked():
+                show_handle=(active and self.owner.show_perspective_handles.isChecked())
+                # V5.33: VP3 final confirmation should look finished. Keep the two
+                # calibration lines, but remove the white endpoint points after VP3 completes.
+                if key=='vp3' and complete:
+                    show_handle=False
+                if (not getattr(self.owner,'export_render_mode',False)) and show_handle:
                     outline=QPen(QColor(color)); outline.setWidthF(2.0); p.setPen(outline); p.setBrush(QColor('#ffffff'))
                     for ptxy in line:
                         hp=self._image_norm_to_point(*ptxy); p.drawEllipse(QRectF(hp.x()-5,hp.y()-5,10,10))
@@ -724,6 +733,10 @@ class ImageCanvas(QWidget):
         if not self.owner.show_perspective.isChecked() or self.pixmap is None:return None
         if self.owner.show_perspective_handles.isChecked():
             name=self.owner.active_perspective_axis; li=self.owner.perspective_step
+            # V5.33: completed VP3 points are intentionally hidden, so they must not
+            # remain as invisible hit targets.
+            if name=='vp3' and self.owner._persp_axis_complete.get('vp3',False):
+                return None
             if li==1 and not self.owner._persp_anchor_touched.get((name,1),set()):
                 return None
             line=self.owner.perspective_lines[name][li]
@@ -1079,7 +1092,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.32 VP3 Parallel Guides Robust Confirm'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.33 VP3 Final Visual State'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -1127,7 +1140,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.32 / VP3平行ガイド・確定強化'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.33 / VP3確定表示'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1345,8 +1358,11 @@ class MovieShotAnalyzer(QMainWindow):
         lab=self.active_perspective_axis.upper()
         if hasattr(self,'persp_step_label'):
             if self._persp_axis_complete.get(self.active_perspective_axis,False):
-                if self.active_perspective_axis=='vp3' and getattr(self,'vp3_at_infinity',False):
-                    self.persp_step_label.setText('VP3 完了：∞（垂直線ほぼ平行）・白○で微調整')
+                if self.active_perspective_axis=='vp3':
+                    if getattr(self,'vp3_at_infinity',False):
+                        self.persp_step_label.setText('VP3 完了：∞（平行ガイド）')
+                    else:
+                        self.persp_step_label.setText('VP3 完了')
                 else:
                     self.persp_step_label.setText(f'{lab} 完了：白○で微調整')
             elif self.perspective_step==0:
