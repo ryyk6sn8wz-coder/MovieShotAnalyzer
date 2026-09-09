@@ -569,13 +569,17 @@ class ImageCanvas(QWidget):
                     dy=(ln[1][1]-ln[0][1])*max(1.0,self.image_rect.height())
                     ll=math.hypot(dx,dy)
                     if ll>1e-6:
-                        dx/=ll; dy/=ll
+                        ux0,uy0=dx/ll,dy/ll
                         # Make both direction vectors point to the same half-plane.
-                        if dirs and dx*dirs[0][0]+dy*dirs[0][1] < 0:
-                            dx=-dx; dy=-dy
-                        dirs.append((dx,dy))
+                        if dirs and ux0*dirs[0][0]+uy0*dirs[0][1] < 0:
+                            ux0=-ux0; uy0=-uy0
+                        # Keep the user's drawn tilt: longer calibration strokes carry
+                        # more weight than short/noisy ones.
+                        dirs.append((ux0,uy0,ll))
                 if dirs:
-                    ux=sum(v[0] for v in dirs); uy=sum(v[1] for v in dirs)
+                    total=max(1e-6,sum(v[2] for v in dirs))
+                    ux=sum(v[0]*v[2] for v in dirs)/total
+                    uy=sum(v[1]*v[2] for v in dirs)/total
                     ul=max(1e-6,math.hypot(ux,uy)); ux/=ul; uy/=ul
                     # Normal to the parallel-line family.
                     nx=-uy; ny=ux
@@ -1092,7 +1096,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.33 VP3 Final Visual State'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.34 VP3 Tilt Preserve'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -1140,7 +1144,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.33 / VP3確定表示'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.34 / VP3傾き保持'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -2278,14 +2282,21 @@ class MovieShotAnalyzer(QMainWindow):
         lines=self.perspective_lines.get(name,[])
         if len(lines)<2:return False
         if name=='vp3':
-            # Vertical families in level shots are often effectively parallel.
-            # Do not manufacture a nearby VP3 from tiny line-angle noise.
+            # V5.34: judge VP3 parallelism in DISPLAY/PIXEL space.
+            # Raw normalized coordinates distort angles on widescreen images and could
+            # incorrectly flatten a visibly tilted VP3 family into screen-vertical guides.
+            iw=float(self.original.width if self.original is not None else 1)
+            ih=float(self.original.height if self.original is not None else 1)
             def _ang(line):
-                dx=line[1][0]-line[0][0]; dy=line[1][1]-line[0][1]
+                dx=(line[1][0]-line[0][0])*iw
+                dy=(line[1][1]-line[0][1])*ih
                 return math.degrees(math.atan2(dy,dx)) % 180.0
             a1,a2=_ang(lines[0]),_ang(lines[1])
             da=abs(a1-a2); da=min(da,180.0-da)
-            if da < 2.5:
+            # Only genuinely near-parallel lines become VP3=∞.
+            # Slight convergence should remain a finite VP3 instead of being "corrected"
+            # into a parallel/vertical family.
+            if da < 0.6:
                 self.vp3_at_infinity=True
                 self.update_perspective_labels()
                 if hasattr(self,'canvas'): self.canvas.update()
