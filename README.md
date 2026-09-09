@@ -1,33 +1,19 @@
-# Movie Shot Analyzer V5.15
+# Movie Shot Analyzer V5.16
 
-V5.13 の建築優先自動パースを土台に、ユーザーの手動パース／自動解析後の修正をローカル学習へ反映する版です。
+V5.16 focuses on a larger image workspace and safer automatic perspective candidates.
 
-## V5.15 の追加
-- 手動で確定した VP 基準線を学習データとして保存
-- 自動解析後に白アンカーで修正したパースも学習
-- 学習結果を次回以降の自動解析の候補スコアへ反映
-- 学習 ON/OFF、現在の手動パースを学習、学習リセット
-- 学習件数を UI に表示
-- 学習データは PC 内に JSON で保存（Windows: AppData/MovieShotAnalyzer）
-- パース線の透明度を 0〜100% で独立調整
-- 構図ガイドの透明度を 0〜100% で独立調整
-- パース線の太さ 0.5〜5.0（0.5刻み）を維持
-- V5.13 の建築物・長い直線優先と手動 VP1→VP2→VP3 鉛筆フローを維持
-
-## 学習方式
-これは巨大なAIモデルの再学習ではなく、手動で採用した基準線の特徴（長さ・画面内位置・方向）を蓄積し、自動VP候補の重み付けを徐々にユーザーの選び方へ適応させる軽量なローカル学習です。最大500サンプルを保持します。
+## Changes
+- Left / Right arrow keys move to previous / next image.
+- F toggles an image-first view.
+- Left and right panels are narrower and each can be collapsed independently.
+- Existing `current / total` image count remains visible in the file information area.
+- Automatic perspective search now keeps more diverse off-screen VP hypotheses instead of greedily consuming the first local line cluster.
+- Long, frame-spanning architectural lines receive stronger weight; short local central edges receive lower weight.
+- A/B/C candidate mode, manual correction, learning, lens estimation, perspective line width/opacity, and composition-guide opacity remain available.
+- VP3 is still only adopted when vertical evidence is sufficiently strong.
 
 ## Windows
-`run.bat` で起動。EXE化は `build_exe.bat`。
+Run `run.bat` for source execution, or build with `build_exe.bat` / GitHub Actions.
 
 ## macOS
-`build_macos.sh` を使用。
-
-
-## V5.15
-- 自動パース候補 A/B/C
-- 建築物・長い直線を優先
-- 弱いVP3は採用しない
-- パース右パネルを縦スクロール化し文字クリップを修正
-- 構図ガイドと交点○の透明度を統合
-- 手動/修正パース学習を継続
+Run `build_macos.sh` on Apple Silicon or Intel macOS with Python installed.

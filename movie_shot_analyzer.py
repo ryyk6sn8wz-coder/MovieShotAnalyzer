@@ -13,7 +13,7 @@ from PySide6.QtCore import QRectF, Qt, QPointF
 from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QFileDialog, QGridLayout, QHBoxLayout,
-    QLabel, QMainWindow, QPushButton, QScrollArea, QSlider, QDoubleSpinBox,
+    QLabel, QMainWindow, QPushButton, QScrollArea, QSlider, QDoubleSpinBox, QLineEdit,
     QVBoxLayout, QWidget, QTabWidget
 )
 
@@ -88,6 +88,44 @@ class ImageCanvas(QWidget):
     def __init__(self,owner):
         super().__init__(); self.owner=owner; self.pixmap=None; self.image_rect=QRectF(); self.drag_item=None
         self.setAcceptDrops(True); self.setMinimumSize(640,420); self.setMouseTracking(True); self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    def toggle_left_panel(self):
+        if not hasattr(self,'left_panel'): return
+        visible=self.left_panel.isVisible()
+        self.left_panel.setVisible(not visible)
+        self.left_toggle.setText('›' if visible else '‹')
+        self.left_toggle.setToolTip('左パネルを表示' if visible else '左パネルを折りたたむ')
+
+    def toggle_right_panel(self):
+        if not hasattr(self,'right_panel'): return
+        visible=self.right_panel.isVisible()
+        self.right_panel.setVisible(not visible)
+        self.right_toggle.setText('‹' if visible else '›')
+        self.right_toggle.setToolTip('右パネルを表示' if visible else '右パネルを折りたたむ')
+
+    def toggle_focus_view(self):
+        # F toggles an image-first view while preserving each panel's previous state.
+        if not hasattr(self,'_focus_view_on'): self._focus_view_on=False
+        if not self._focus_view_on:
+            self._focus_prev=(self.left_panel.isVisible(),self.right_panel.isVisible())
+            self.left_panel.hide(); self.right_panel.hide(); self.left_toggle.setText('›'); self.right_toggle.setText('‹')
+            self._focus_view_on=True; self.statusBar().showMessage('画像優先表示：Fで元に戻します',2500)
+        else:
+            lv,rv=getattr(self,'_focus_prev',(True,True)); self.left_panel.setVisible(lv); self.right_panel.setVisible(rv)
+            self.left_toggle.setText('‹' if lv else '›'); self.right_toggle.setText('›' if rv else '‹')
+            self._focus_view_on=False
+
+    def keyPressEvent(self,e):
+        key=e.key(); focus=QApplication.focusWidget()
+        # Keep arrow-key editing inside numeric/text controls and sliders.
+        editing=isinstance(focus,(QDoubleSpinBox,QLineEdit,QSlider))
+        if key==Qt.Key.Key_Left and not editing:
+            self.prev_image(); e.accept(); return
+        if key==Qt.Key.Key_Right and not editing:
+            self.next_image(); e.accept(); return
+        if key==Qt.Key.Key_F and not editing:
+            self.toggle_focus_view(); e.accept(); return
+        super().keyPressEvent(e)
+
     def dragEnterEvent(self,e):
         if e.mimeData().hasUrls():e.acceptProposedAction()
     def dropEvent(self,e):
@@ -764,7 +802,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.15 Perspective Candidates'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.16 Wide Viewer'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -797,17 +835,18 @@ class MovieShotAnalyzer(QMainWindow):
         self.vp_ray_colors={'vp1':'#00d4ff','vp2':'#ff4fa3','vp3':'#7ee787'}
         self.vp_ray_counts={'vp1':12,'vp2':12,'vp3':12}
         self.vp_ray_visible={'vp1':True,'vp2':True,'vp3':True}
-        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.15 — 建築優先候補A/B/C + 安全なVP3 + UI修正')
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.16 — 建築長線強化 + ワイド表示 + ←→画像送り')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
         root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.15 / 建築優先・候補A/B/C＋学習＋レンズ'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.16 / 建築長線強化・ワイド表示・矢印操作'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
+        keyhint=QLabel('← / → キーでも前後移動　・　F：画像優先表示'); keyhint.setObjectName('note'); keyhint.setWordWrap(True); c.addWidget(keyhint)
 
         self.section(c,'実映像フレーム')
         self.show_frame=QCheckBox('フレーム枠を表示'); self.show_frame.setChecked(True); self.manual_frame=QCheckBox('自由変形ハンドルを使う'); self.manual_frame.setChecked(True); self.show_frame.toggled.connect(self.refresh); c.addWidget(self.show_frame); c.addWidget(self.manual_frame)
@@ -822,8 +861,10 @@ class MovieShotAnalyzer(QMainWindow):
         for key,label,lo,hi,val in [('brightness','明るさ',50,150,100),('contrast','コントラスト',50,150,100),('gamma','ガンマ',50,200,100),('saturation','彩度',0,200,100)]:
             row=QHBoxLayout(); row.addWidget(QLabel(label)); sld=QSlider(Qt.Orientation.Horizontal); sld.setRange(lo,hi); sld.setValue(val); v=QLabel(str(val)); v.setFixedWidth(32); sld.valueChanged.connect(lambda n,k=key,vl=v:(vl.setText(str(n)),self.update_display())); row.addWidget(sld,1); row.addWidget(v); c.addLayout(row); self.sliders[key]=sld
         resetdisp=QPushButton('表示補正をリセット'); resetdisp.clicked.connect(self.reset_display); c.addWidget(resetdisp); c.addStretch(1)
-        scroll=QScrollArea(); scroll.setObjectName('controlScroll'); scroll.setWidgetResizable(True); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); scroll.setWidget(cw); scroll.setMinimumWidth(300); scroll.setMaximumWidth(350); outer.addWidget(scroll,0)
+        scroll=QScrollArea(); scroll.setObjectName('controlScroll'); scroll.setWidgetResizable(True); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); scroll.setWidget(cw); scroll.setMinimumWidth(235); scroll.setMaximumWidth(275); self.left_panel=scroll; outer.addWidget(scroll,0)
+        self.left_toggle=QPushButton('‹'); self.left_toggle.setObjectName('panelToggle'); self.left_toggle.setFixedWidth(22); self.left_toggle.setToolTip('左パネルを折りたたむ'); self.left_toggle.clicked.connect(self.toggle_left_panel); outer.addWidget(self.left_toggle,0)
         self.canvas=ImageCanvas(self); outer.addWidget(self.canvas,1)
+        self.right_toggle=QPushButton('›'); self.right_toggle.setObjectName('panelToggle'); self.right_toggle.setFixedWidth(22); self.right_toggle.setToolTip('右パネルを折りたたむ'); self.right_toggle.clicked.connect(self.toggle_right_panel); outer.addWidget(self.right_toggle,0)
         self._build_right_tabs(outer)
         self._update_nav(); self.update_perspective_labels(); self.update_perspective_panel_state()
 
@@ -833,7 +874,7 @@ class MovieShotAnalyzer(QMainWindow):
         return b
 
     def _build_right_tabs(self,outer):
-        panel=QWidget(); panel.setObjectName('rightPanel'); panel.setMinimumWidth(350); panel.setMaximumWidth(440)
+        panel=QWidget(); panel.setObjectName('rightPanel'); panel.setMinimumWidth(300); panel.setMaximumWidth(360); self.right_panel=panel
         r=QVBoxLayout(panel); r.setContentsMargins(8,8,8,8); r.setSpacing(6)
         self.right_tabs=QTabWidget(); self.right_tabs.setObjectName('rightTabs'); r.addWidget(self.right_tabs)
         self._build_perspective_tab(); self._build_composition_tab(); self._build_analysis_tab()
@@ -1012,7 +1053,45 @@ class MovieShotAnalyzer(QMainWindow):
         import copy; self.perspective_lines[name]=copy.deepcopy(defaults[name]); self._persp_axis_complete[name]=False; self._persp_anchor_touched[(name,0)]=set(); self._persp_anchor_touched.pop((name,1),None); self.perspective_step=0; self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
 
     def _style(self):
-        self.setStyleSheet('''QMainWindow,QWidget{background:#20242b;color:#e8edf3}#controlsWidget{background:#20242b}#controlScroll{border:1px solid #343a43;background:#20242b}#appTitle{font-size:20px;font-weight:700}#panelTitle{font-size:18px;font-weight:700}#rightPanel{background:#1b1f26;border:1px solid #343a43}QTabWidget::pane{border:1px solid #343a43;background:#1b1f26}QTabBar::tab{background:#272d36;border:1px solid #3e4652;padding:9px 12px;margin-right:2px}QTabBar::tab:selected{background:#2d6cdf;color:white}QPushButton:checked{background:#2d6cdf;border-color:#68a0ff;color:white}#subtitle,#note{color:#aeb7c4}#section{font-size:14px;font-weight:700;color:#d9e2ec;margin-top:8px;border-top:1px solid #3b424d;padding-top:8px}#fileLabel{background:#171a20;border:1px solid #343a43;border-radius:5px;padding:8px}QPushButton{background:#303641;border:1px solid #48505d;border-radius:5px;padding:7px}QPushButton:hover{background:#3a424f}QPushButton:disabled{color:#69717c;background:#272b32}QLabel{min-height:20px;padding-top:2px;padding-bottom:2px}QCheckBox{min-height:22px;padding:3px 1px}QDoubleSpinBox{background:#171a20;border:1px solid #48505d;padding:4px}QSlider::groove:horizontal{height:4px;background:#3b424d}QSlider::handle:horizontal{width:14px;margin:-5px 0;background:#8ab4f8;border-radius:7px}QScrollBar:vertical{background:#20242b;width:12px}QScrollBar::handle:vertical{background:#4a5260;min-height:28px;border-radius:5px}QStatusBar{background:#171a20;color:#aeb7c4}''')
+        self.setStyleSheet('''QMainWindow,QWidget{background:#20242b;color:#e8edf3}#controlsWidget{background:#20242b}#controlScroll{border:1px solid #343a43;background:#20242b}#appTitle{font-size:20px;font-weight:700}#panelTitle{font-size:18px;font-weight:700}#rightPanel{background:#1b1f26;border:1px solid #343a43}QTabWidget::pane{border:1px solid #343a43;background:#1b1f26}QTabBar::tab{background:#272d36;border:1px solid #3e4652;padding:9px 12px;margin-right:2px}QTabBar::tab:selected{background:#2d6cdf;color:white}QPushButton:checked{background:#2d6cdf;border-color:#68a0ff;color:white}#subtitle,#note{color:#aeb7c4}#section{font-size:14px;font-weight:700;color:#d9e2ec;margin-top:8px;border-top:1px solid #3b424d;padding-top:8px}#fileLabel{background:#171a20;border:1px solid #343a43;border-radius:5px;padding:8px}QPushButton{background:#303641;border:1px solid #48505d;border-radius:5px;padding:7px}QPushButton:hover{background:#3a424f}#panelToggle{padding:2px;font-size:17px;font-weight:700;background:#252b34;border-radius:3px}QPushButton:disabled{color:#69717c;background:#272b32}QLabel{min-height:20px;padding-top:2px;padding-bottom:2px}QCheckBox{min-height:22px;padding:3px 1px}QDoubleSpinBox{background:#171a20;border:1px solid #48505d;padding:4px}QSlider::groove:horizontal{height:4px;background:#3b424d}QSlider::handle:horizontal{width:14px;margin:-5px 0;background:#8ab4f8;border-radius:7px}QScrollBar:vertical{background:#20242b;width:12px}QScrollBar::handle:vertical{background:#4a5260;min-height:28px;border-radius:5px}QStatusBar{background:#171a20;color:#aeb7c4}''')
+    def toggle_left_panel(self):
+        if not hasattr(self,'left_panel'): return
+        visible=self.left_panel.isVisible()
+        self.left_panel.setVisible(not visible)
+        self.left_toggle.setText('›' if visible else '‹')
+        self.left_toggle.setToolTip('左パネルを表示' if visible else '左パネルを折りたたむ')
+
+    def toggle_right_panel(self):
+        if not hasattr(self,'right_panel'): return
+        visible=self.right_panel.isVisible()
+        self.right_panel.setVisible(not visible)
+        self.right_toggle.setText('‹' if visible else '›')
+        self.right_toggle.setToolTip('右パネルを表示' if visible else '右パネルを折りたたむ')
+
+    def toggle_focus_view(self):
+        # F toggles an image-first view while preserving each panel's previous state.
+        if not hasattr(self,'_focus_view_on'): self._focus_view_on=False
+        if not self._focus_view_on:
+            self._focus_prev=(self.left_panel.isVisible(),self.right_panel.isVisible())
+            self.left_panel.hide(); self.right_panel.hide(); self.left_toggle.setText('›'); self.right_toggle.setText('‹')
+            self._focus_view_on=True; self.statusBar().showMessage('画像優先表示：Fで元に戻します',2500)
+        else:
+            lv,rv=getattr(self,'_focus_prev',(True,True)); self.left_panel.setVisible(lv); self.right_panel.setVisible(rv)
+            self.left_toggle.setText('‹' if lv else '›'); self.right_toggle.setText('›' if rv else '‹')
+            self._focus_view_on=False
+
+    def keyPressEvent(self,e):
+        key=e.key(); focus=QApplication.focusWidget()
+        # Keep arrow-key editing inside numeric/text controls and sliders.
+        editing=isinstance(focus,(QDoubleSpinBox,QLineEdit,QSlider))
+        if key==Qt.Key.Key_Left and not editing:
+            self.prev_image(); e.accept(); return
+        if key==Qt.Key.Key_Right and not editing:
+            self.next_image(); e.accept(); return
+        if key==Qt.Key.Key_F and not editing:
+            self.toggle_focus_view(); e.accept(); return
+        super().keyPressEvent(e)
+
     def dragEnterEvent(self,e):
         if e.mimeData().hasUrls():e.acceptProposedAction()
     def dropEvent(self,e): self.open_paths([Path(u.toLocalFile()) for u in e.mimeData().urls() if u.isLocalFile()]); e.acceptProposedAction()
@@ -1128,10 +1207,16 @@ class MovieShotAnalyzer(QMainWindow):
             border=min(mx,1.0-mx,my,1.0-my)
             span=max(abs(a[0]-bb[0]),abs(a[1]-bb[1]))
             structure=1.0 + min(2.5,nlen*8.0) + min(1.2,span*1.8)
-            if nlen < 0.085: structure*=0.35
-            elif nlen < 0.13: structure*=0.65
+            if nlen < 0.085: structure*=0.26
+            elif nlen < 0.13: structure*=0.58
+            # Long frame-spanning architecture is more trustworthy than local clusters around people.
+            if span >= 0.28: structure*=1.28
+            elif span >= 0.20: structure*=1.12
+            center_dist=math.hypot(mx-0.5,my-0.5)
+            if center_dist < 0.24 and nlen < 0.15 and span < 0.20:
+                structure*=0.52
             # Architectural frames often live near the image perimeter; modest bonus only.
-            if border < 0.18: structure*=1.12
+            if border < 0.18: structure*=1.16
             # Personal adaptive prior learned from the user's accepted manual/corrected lines.
             if self.learning_enabled and self.learning_data.get('count',0)>0:
                 pref=self.learning_data.get('feature_mean',{})
@@ -1177,47 +1262,63 @@ class MovieShotAnalyzer(QMainWindow):
         score*=0.65+min(0.7,spread)
         return (score,support,sum(errs)/len(errs))
 
-    def _find_vp_clusters(self,segments,max_clusters=3):
+    def _find_vp_clusters(self,segments,max_clusters=7):
+        """Find diverse VP hypotheses from long/structural lines without greedily consuming support.
+        This keeps off-screen architectural alternatives alive for A/B/C candidate generation.
+        """
         if len(segments)<4:return []
-        remaining=list(range(len(segments))); clusters=[]
-        for _ in range(max_clusters):
-            pool=[segments[i] for i in remaining]
-            if len(pool)<2:break
-            candidates=[]
-            n=min(len(pool),85)
-            for i in range(n):
-                a=pool[i]
-                adx=a['b'][0]-a['a'][0]; ady=a['b'][1]-a['a'][1]; al=math.hypot(adx,ady)
-                for j in range(i+1,n):
-                    b=pool[j]
-                    bdx=b['b'][0]-b['a'][0]; bdy=b['b'][1]-b['a'][1]; bl=math.hypot(bdx,bdy)
-                    if al<1e-9 or bl<1e-9:continue
-                    sine=abs(adx*bdy-ady*bdx)/(al*bl)
-                    if sine<math.sin(math.radians(5.0)):continue
-                    ip=infinite_line_intersection(a['a'],a['b'],b['a'],b['b'])
-                    if ip is None:continue
-                    if not (-8.0<=ip[0]<=9.0 and -7.0<=ip[1]<=8.0):continue
-                    candidates.append(ip)
-            if not candidates:break
-            if len(candidates)>700:
-                step=max(1,len(candidates)//700); candidates=candidates[::step][:700]
-            best=None
-            for vp in candidates:
-                sc,supp,err=self._vp_candidate_score(vp,pool)
-                if best is None or sc>best[0]: best=(sc,vp,supp,err)
-            if best is None or len(best[2])<2:break
-            sc,vp,supp,err=best
-            global_support=[remaining[k] for k in supp]
-            if sc<0.055:break
-            # Orientation descriptor used to identify the vertical family.
+        seed_ids=[i for i,s in enumerate(segments) if s['length']>=0.095 or s.get('structure',1.0)>=1.75]
+        if len(seed_ids)<4: seed_ids=list(range(min(len(segments),90)))
+        seed_ids=seed_ids[:90]
+        candidates=[]
+        for ii in range(len(seed_ids)):
+            i=seed_ids[ii]; a=segments[i]
+            adx=a['b'][0]-a['a'][0]; ady=a['b'][1]-a['a'][1]; al=math.hypot(adx,ady)
+            for jj in range(ii+1,len(seed_ids)):
+                j=seed_ids[jj]; b=segments[j]
+                bdx=b['b'][0]-b['a'][0]; bdy=b['b'][1]-b['a'][1]; bl=math.hypot(bdx,bdy)
+                if al<1e-9 or bl<1e-9:continue
+                sine=abs(adx*bdy-ady*bdx)/(al*bl)
+                if sine<math.sin(math.radians(3.0)):continue
+                ip=infinite_line_intersection(a['a'],a['b'],b['a'],b['b'])
+                if ip is None:continue
+                if not (-10.0<=ip[0]<=11.0 and -9.0<=ip[1]<=10.0):continue
+                candidates.append(ip)
+        if not candidates:return []
+        if len(candidates)>1300:
+            step=max(1,len(candidates)//1300); candidates=candidates[::step][:1300]
+        scored=[]
+        for vp in candidates:
+            sc,supp,err=self._vp_candidate_score(vp,segments)
+            if len(supp)<2 or sc<0.055:continue
+            # Prefer hypotheses backed by at least one genuinely long structural line.
+            long_support=sum(1 for gi in supp if segments[gi]['length']>=0.12)
+            if long_support==0: sc*=0.55
+            mids=[segments[gi]['mid'] for gi in supp[:20]]
+            if mids:
+                xs=[m[0] for m in mids]; ys=[m[1] for m in mids]
+                distribution=(max(xs)-min(xs))+(max(ys)-min(ys))
+                sc*=0.82+min(0.45,distribution*0.45)
+            scored.append((sc,vp,supp,err))
+        scored.sort(key=lambda x:x[0],reverse=True)
+        clusters=[]
+        for sc,vp,supp,err in scored:
+            # Non-max suppression in VP space; preserve meaningfully different off-screen solutions.
+            duplicate=False
+            for c in clusters:
+                d=math.hypot(vp[0]-c['vp'][0],vp[1]-c['vp'][1])
+                scale=0.18+0.035*max(math.hypot(*vp),math.hypot(*c['vp']))
+                overlap=len(set(supp)&set(c['support']))/max(1,min(len(supp),len(c['support'])))
+                if d<scale and overlap>0.45:
+                    duplicate=True; break
+            if duplicate:continue
             angs=[]
-            for gi in global_support:
+            for gi in supp:
                 ss=segments[gi]; dx=ss['b'][0]-ss['a'][0]; dy=ss['b'][1]-ss['a'][1]
                 angs.append(abs(math.degrees(math.atan2(dy,dx)))%180)
-            vertdev=min(abs(a-90.0) for a in angs) if angs else 90.0
             medvert=sorted([abs(a-90.0) for a in angs])[len(angs)//2] if angs else 90.0
-            clusters.append({'vp':vp,'support':global_support,'score':sc,'err':err,'vertical_dev':medvert})
-            remset=set(global_support); remaining=[gi for gi in remaining if gi not in remset]
+            clusters.append({'vp':vp,'support':supp,'score':sc,'err':err,'vertical_dev':medvert})
+            if len(clusters)>=max_clusters:break
         return clusters
 
     def _choose_two_support_lines(self,cluster,segments):
@@ -1300,7 +1401,12 @@ class MovieShotAnalyzer(QMainWindow):
         shared=len(set(a['support']) & set(b['support']))
         if shared: return -1e9
         score=a['score']+b['score']
-        score += min(0.8,sep*0.18)
+        score += min(0.9,sep*0.20)
+        # Two perspective families converging inside the busy center are often local object/person edges.
+        for vx,vy in ((vx1,vy1),(vx2,vy2)):
+            if 0.18<vx<0.82 and 0.18<vy<0.82:
+                score-=0.42
+        # Off-screen VPs are normal for standard/telephoto architectural shots; do not penalize them.
         # Horizon should not be absurdly steep for the common architectural 2-point case.
         slope=abs(vy2-vy1)/max(abs(vx2-vx1),0.08)
         if slope>0.65: score-=min(1.2,(slope-0.65)*1.1)
@@ -1389,7 +1495,7 @@ class MovieShotAnalyzer(QMainWindow):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             segments=self._detect_segments_cv(); self._last_auto_segments=segments
-            clusters=self._find_vp_clusters(segments,5)
+            clusters=self._find_vp_clusters(segments,7)
             self.auto_candidates=self._build_auto_candidates(segments,clusters)
             for i,b in enumerate(getattr(self,'auto_candidate_buttons',[])): b.setEnabled(i<len(self.auto_candidates))
             if not self.auto_candidates:
