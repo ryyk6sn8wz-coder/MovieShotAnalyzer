@@ -802,7 +802,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.17 Wide Viewer'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.18 Direction Cluster Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -845,7 +845,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.17 / キー操作修正・候補多様化・自動解析安定化'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.18 / 方向クラスタ解析・建築パース強化・候補A/B/C再設計'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1342,6 +1342,180 @@ class MovieShotAnalyzer(QMainWindow):
             if len(clusters)>=max_clusters:break
         return clusters
 
+
+    def _segment_angle_deg(self,s):
+        dx=s['b'][0]-s['a'][0]; dy=s['b'][1]-s['a'][1]
+        a=math.degrees(math.atan2(dy,dx))%180.0
+        return a
+
+    def _angle_distance_deg(self,a,b):
+        d=abs(a-b)%180.0
+        return min(d,180.0-d)
+
+    def _direction_groups(self,segments,relaxed=False):
+        """Cluster segments by dominant image direction before solving vanishing points.
+
+        This intentionally changes the order of operations compared with V5.17:
+        first find major architectural directions, then estimate one VP per direction.
+        It helps prevent a dense local intersection around people/props from becoming
+        a false global VP.
+        """
+        if not segments: return []
+        binw=5.0
+        bins=[0.0]*36
+        for i,s in enumerate(segments):
+            a=self._segment_angle_deg(s)
+            # Long, structural and spatially useful edges dominate the histogram.
+            w=max(0.001,s['length']*s.get('structure',1.0))
+            if s['length']>=0.20: w*=1.45
+            elif s['length']<0.08: w*=0.45
+            mx,my=s['mid']
+            if 0.26<mx<0.74 and 0.22<my<0.82 and s['length']<0.14:
+                w*=0.55
+            bi=int(a/binw)%36
+            # small circular smoothing so one true family doesn't split on a bin edge
+            bins[bi]+=w
+            bins[(bi-1)%36]+=w*0.42
+            bins[(bi+1)%36]+=w*0.42
+        peaks=[]
+        for i,v in enumerate(bins):
+            if v<=0: continue
+            if v>=bins[(i-1)%36] and v>=bins[(i+1)%36]:
+                peaks.append((v,(i+0.5)*binw))
+        peaks.sort(reverse=True)
+        chosen=[]
+        min_sep=12.0 if relaxed else 15.0
+        for v,a in peaks:
+            if all(self._angle_distance_deg(a,b)>min_sep for _,b in chosen):
+                chosen.append((v,a))
+            if len(chosen)>=6: break
+        groups=[]
+        win=18.0 if relaxed else 14.0
+        for rank,(strength,peak) in enumerate(chosen):
+            ids=[]
+            for i,s in enumerate(segments):
+                if self._angle_distance_deg(self._segment_angle_deg(s),peak)<=win:
+                    ids.append(i)
+            # Keep strongest first, but retain distributed architecture.
+            ids=sorted(ids,key=lambda i:segments[i]['length']*segments[i].get('structure',1.0),reverse=True)[:42]
+            if len(ids)<2: continue
+            mids=[segments[i]['mid'] for i in ids[:20]]
+            spreadx=max(m[0] for m in mids)-min(m[0] for m in mids) if mids else 0
+            spready=max(m[1] for m in mids)-min(m[1] for m in mids) if mids else 0
+            spatial=spreadx+spready
+            # A group concentrated in one small patch is likely a person/object edge cluster.
+            gscore=strength*(0.68+min(0.75,spatial))
+            medvert=self._angle_distance_deg(peak,90.0)
+            groups.append({'ids':ids,'peak':peak,'score':gscore,'vertical_dev':medvert,'spatial':spatial,'rank':rank})
+        groups.sort(key=lambda g:g['score'],reverse=True)
+        return groups
+
+    def _solve_direction_group_vp(self,group,segments,relaxed=False):
+        """Robust weighted least-squares VP for one direction family."""
+        ids=list(group.get('ids',[]))
+        if len(ids)<2 or np is None: return None
+        # Prefer long architectural members and iteratively reject outliers.
+        active=ids[:]
+        vp=None
+        for _ in range(3):
+            A=[]; B=[]; W=[]
+            for i in active:
+                s=segments[i]; x1,y1=s['a']; x2,y2=s['b']
+                aa=y1-y2; bb=x2-x1; cc=x1*y2-x2*y1
+                norm=math.hypot(aa,bb)
+                if norm<1e-9: continue
+                aa/=norm; bb/=norm; cc/=norm
+                w=max(0.01,s['length']*s.get('structure',1.0))
+                if s['length']>=0.18: w*=1.35
+                A.append((aa,bb)); B.append(-cc); W.append(w)
+            if len(A)<2:return None
+            A=np.asarray(A,float); B=np.asarray(B,float); W=np.asarray(W,float)
+            sw=np.sqrt(W)[:,None]
+            try:
+                sol,_,_,_=np.linalg.lstsq(A*sw,B*np.sqrt(W),rcond=None)
+            except Exception:
+                return None
+            vp=(float(sol[0]),float(sol[1]))
+            # Permit far-off-screen VPs, but reject numerical explosions.
+            if not all(math.isfinite(v) for v in vp) or abs(vp[0])>24 or abs(vp[1])>24:
+                return None
+            residuals=[]
+            for i in active:
+                s=segments[i]; x1,y1=s['a']; x2,y2=s['b']
+                dx=x2-x1; dy=y2-y1; dl=math.hypot(dx,dy)
+                mx,my=s['mid']; rx=vp[0]-mx; ry=vp[1]-my; rl=math.hypot(rx,ry)
+                err=1.0 if dl<1e-9 or rl<1e-9 else abs(dx*ry-dy*rx)/(dl*rl)
+                residuals.append((err,i))
+            residuals.sort()
+            keep=max(2,int(len(residuals)*(0.78 if relaxed else 0.68)))
+            new=[i for _,i in residuals[:keep]]
+            if set(new)==set(active): break
+            active=new
+        if vp is None:return None
+        errlim=0.080 if relaxed else 0.052
+        sc,supp,err=self._vp_candidate_score(vp,[segments[i] for i in ids],errlim)
+        # _vp_candidate_score returned local indices; map to global indices.
+        supp_global=[ids[j] for j in supp]
+        if len(supp_global)<2:return None
+        # Global support may add other collinear architecture outside the initial angle window.
+        gsc,gsupp,gerr=self._vp_candidate_score(vp,segments,errlim)
+        if len(gsupp)>=len(supp_global):
+            supp_global=gsupp; sc=gsc; err=gerr
+        long_support=sum(1 for i in supp_global if segments[i]['length']>=0.11)
+        if long_support<1 and not relaxed:return None
+        score=sc + group.get('score',0.0)*0.28 + min(0.55,long_support*0.08)
+        return {'vp':vp,'support':supp_global,'score':score,'err':err,'vertical_dev':group.get('vertical_dev',90.0),'direction_peak':group.get('peak',0.0),'group_rank':group.get('rank',0),'group_spatial':group.get('spatial',0.0)}
+
+    def _build_direction_cluster_candidates(self,segments,relaxed=False):
+        """Create A/B/C from genuinely different direction-family combinations."""
+        groups=self._direction_groups(segments,relaxed)
+        solved=[]
+        for g in groups:
+            c=self._solve_direction_group_vp(g,segments,relaxed)
+            if c is not None: solved.append(c)
+        if not solved:return []
+        vertical=[]; planar=[]
+        for c in solved:
+            # Near-vertical families are validation/VP3, not one of the main horizontal pair.
+            if c['vertical_dev'] <= (13.0 if relaxed else 10.0): vertical.append(c)
+            else: planar.append(c)
+        if len(planar)<2:
+            planar=[c for c in solved if c not in vertical] or solved[:]
+        pairs=[]
+        for i in range(len(planar)):
+            for j in range(i+1,len(planar)):
+                a,b=planar[i],planar[j]
+                # Require genuinely different dominant image directions.
+                d=self._angle_distance_deg(a.get('direction_peak',0),b.get('direction_peak',0))
+                if d < (16.0 if relaxed else 20.0): continue
+                sc=self._pair_candidate_score(a,b,segments,relaxed)
+                if sc<=-1e8:continue
+                # Distinct direction peaks and broad support are strongly rewarded.
+                sc += min(0.75,d/65.0)
+                sc += min(0.45,(a.get('group_spatial',0)+b.get('group_spatial',0))*0.22)
+                pairs.append((sc,a,b,d))
+        pairs.sort(key=lambda x:x[0],reverse=True)
+        out=[]; used_sigs=[]
+        for sc,a,b,d in pairs:
+            # label vp1/vp2 by x, preserving the older UI convention
+            hs=sorted((a,b),key=lambda c:c['vp'][0])
+            sig=tuple(sorted((round(a.get('direction_peak',0)/5)*5,round(b.get('direction_peak',0)/5)*5)))
+            if any(sum(abs(x-y) for x,y in zip(sig,osig))<12 for osig in used_sigs):
+                continue
+            item={'vp1':hs[0],'vp2':hs[1],'score':sc,'direction_signature':sig}
+            if vertical:
+                vv=max(vertical,key=lambda c:(c['score']-c['err']*5.0))
+                if vv['err'] <= (0.055 if relaxed else 0.035) and len(vv['support'])>=2:
+                    item['vp3']=vv
+            out.append(item); used_sigs.append(sig)
+            if len(out)>=3:break
+        # If only one true pair exists, expose single-direction alternatives rather than clones.
+        if len(out)<3:
+            for c in solved:
+                if any(c is x.get('vp1') or c is x.get('vp2') or c is x.get('vp3') for x in out): continue
+                out.append({'vp1':c,'score':c['score'],'single':True,'direction_signature':(round(c.get('direction_peak',0)/5)*5,)})
+                if len(out)>=3:break
+        return out
     def _choose_two_support_lines(self,cluster,segments):
         ids=cluster['support']
         if not ids:return None
@@ -1522,32 +1696,42 @@ class MovieShotAnalyzer(QMainWindow):
         self.update_perspective_panel_state(); self.update_perspective_labels(); self.save_perspective(); self.refresh()
 
     def auto_analyze_perspective(self):
-        """Generate A/B/C architectural VP candidates; never force a weak VP3."""
+        """V5.18: direction-family clustering first, VP solve second."""
         if self.original is None:
             self.statusBar().showMessage('先に画像を開いてください。',4000); return
         if cv2 is None or np is None:
             self.statusBar().showMessage('自動解析には OpenCV / NumPy が必要です。requirements.txt から再ビルドしてください。',7000); return
-        self.statusBar().showMessage('自動パース候補を解析中…')
+        self.statusBar().showMessage('方向クラスタから建築パースを解析中…')
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             segments=self._detect_segments_cv(); self._last_auto_segments=segments
-            clusters=self._find_vp_clusters(segments,10,False)
-            self.auto_candidates=self._build_auto_candidates(segments,clusters,False)
+            self.auto_candidates=self._build_direction_cluster_candidates(segments,False)
             relaxed_used=False
             if not self.auto_candidates or (len(self.auto_candidates)==1 and self.auto_candidates[0].get('single')):
-                relaxed_clusters=self._find_vp_clusters(segments,12,True)
-                relaxed_candidates=self._build_auto_candidates(segments,relaxed_clusters,True)
-                if len(relaxed_candidates)>len(self.auto_candidates):
-                    self.auto_candidates=relaxed_candidates; relaxed_used=True
-            for i,b in enumerate(getattr(self,'auto_candidate_buttons',[])): b.setEnabled(i<len(self.auto_candidates))
+                relaxed=self._build_direction_cluster_candidates(segments,True)
+                if len(relaxed)>len(self.auto_candidates):
+                    self.auto_candidates=relaxed; relaxed_used=True
+            # Last-resort compatibility fallback: old VP-intersection solver, only when the
+            # new direction-family solver cannot construct a usable solution.
+            if not self.auto_candidates:
+                clusters=self._find_vp_clusters(segments,10,True)
+                self.auto_candidates=self._build_auto_candidates(segments,clusters,True)
+                relaxed_used=True
+            for i,b in enumerate(getattr(self,'auto_candidate_buttons',[])):
+                b.setEnabled(i<len(self.auto_candidates))
             if not self.auto_candidates:
                 self.auto_detected_lines=[]; self.auto_analysis_quality=0.0; self.auto_analysis_note=f'候補なし / 検出線 {len(segments)}本'
                 self.auto_analysis_label.setText(f'自動解析：候補なし / 検出線 {len(segments)}本 / 手動入力を使用')
-                self.statusBar().showMessage(f'自動解析：直線は {len(segments)} 本検出しましたが、信頼できるVP候補を作れませんでした。',8000); self.refresh(); return
+                self.statusBar().showMessage(f'自動解析：直線は {len(segments)} 本検出しましたが、信頼できる方向クラスタを作れませんでした。',8000); self.refresh(); return
             if relaxed_used:
-                self.statusBar().showMessage('通常条件では候補が不足したため、低コントラスト用の緩和解析を使用しました。',5000)
+                self.statusBar().showMessage('方向クラスタが不足したため緩和条件も使用しました。',4500)
             self.apply_auto_candidate(0)
-            self.statusBar().showMessage(f'自動解析完了：{len(self.auto_candidates)}候補。A/B/Cを切り替えて最も合うものを選べます。',7000)
+            # Make the method visible in the UI so tests can distinguish V5.18 behaviour.
+            sig=self.auto_candidates[0].get('direction_signature')
+            if sig:
+                self.auto_analysis_note += ' / 方向 ' + '-'.join(str(int(x))+'°' for x in sig)
+                self.auto_analysis_label.setText(f'自動解析：信頼度 {self.auto_analysis_quality:.0f}% / {self.auto_analysis_note}')
+            self.statusBar().showMessage(f'方向クラスタ解析完了：{len(self.auto_candidates)}候補。A/B/Cは異なる方向群から生成します。',7000)
         except Exception as ex:
             self.statusBar().showMessage(f'自動解析でエラー: {ex}',9000)
         finally:

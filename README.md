@@ -1,11 +1,15 @@
-# Movie Shot Analyzer V5.17
+# Movie Shot Analyzer V5.18
 
-V5.17 fixes keyboard image navigation and makes automatic perspective analysis more robust.
+V5.18 changes automatic perspective analysis from "intersection candidates first" to **direction-cluster first**.
 
-- Left / Right arrow keys now navigate images even when the image canvas has focus.
-- F toggles the image-priority view.
-- A/B/C perspective candidates are filtered so near-identical candidates are not shown as separate choices.
-- Automatic perspective analysis first uses strict architecture-priority detection, then falls back to a relaxed pass on sparse / low-contrast images.
-- If only one reliable direction is available, the app shows that result instead of appearing unresponsive.
-- Candidate state is reset when moving to a different image.
-- Manual perspective, learning, lens estimate, guide opacity and line-width controls are preserved.
+## Main changes
+- Detect dominant architectural line directions before solving vanishing points.
+- Robust weighted least-squares VP solve for each direction family.
+- Long / frame-spanning structural lines receive stronger weight; short central object/person edges receive less weight.
+- A/B/C are generated from different direction-family combinations instead of near-duplicate VP intersections.
+- Near-vertical direction families are treated primarily as VP3 validation and are not forced.
+- Far off-screen vanishing points are allowed.
+- Falls back to the previous relaxed solver only if direction clustering cannot form a usable candidate.
+- Keyboard Left/Right image navigation and the V5.17 viewer/UI improvements are retained.
+
+Build as before with GitHub Actions or `build_exe.bat`.
