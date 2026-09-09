@@ -802,7 +802,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.18 Direction Cluster Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.19 Conservative Architecture Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -845,7 +845,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.18 / 方向クラスタ解析・建築パース強化・候補A/B/C再設計'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.19 / 誤検出抑制・1方向停止・学習方向優先'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1233,8 +1233,11 @@ class MovieShotAnalyzer(QMainWindow):
             if span >= 0.28: structure*=1.28
             elif span >= 0.20: structure*=1.12
             center_dist=math.hypot(mx-0.5,my-0.5)
-            if center_dist < 0.24 and nlen < 0.15 and span < 0.20:
-                structure*=0.52
+            if center_dist < 0.28 and nlen < 0.17 and span < 0.24:
+                structure*=0.30
+            # Dense short edges near the central subject area are frequently people/clothing/props.
+            if 0.20 < mx < 0.80 and 0.16 < my < 0.88 and nlen < 0.105:
+                structure*=0.42
             # Architectural frames often live near the image perimeter; modest bonus only.
             if border < 0.18: structure*=1.16
             # Personal adaptive prior learned from the user's accepted manual/corrected lines.
@@ -1370,8 +1373,11 @@ class MovieShotAnalyzer(QMainWindow):
             if s['length']>=0.20: w*=1.45
             elif s['length']<0.08: w*=0.45
             mx,my=s['mid']
-            if 0.26<mx<0.74 and 0.22<my<0.82 and s['length']<0.14:
-                w*=0.55
+            if 0.20<mx<0.80 and 0.18<my<0.86 and s['length']<0.16:
+                w*=0.34
+            # Very short central edges should almost never define a global perspective family.
+            if 0.28<mx<0.72 and 0.24<my<0.82 and s['length']<0.10:
+                w*=0.28
             bi=int(a/binw)%36
             # small circular smoothing so one true family doesn't split on a bin edge
             bins[bi]+=w
@@ -1404,11 +1410,35 @@ class MovieShotAnalyzer(QMainWindow):
             spready=max(m[1] for m in mids)-min(m[1] for m in mids) if mids else 0
             spatial=spreadx+spready
             # A group concentrated in one small patch is likely a person/object edge cluster.
-            gscore=strength*(0.68+min(0.75,spatial))
+            gscore=strength*(0.52+min(0.95,spatial*1.15))
+            if spatial < (0.34 if relaxed else 0.42):
+                gscore*=0.48
             medvert=self._angle_distance_deg(peak,90.0)
             groups.append({'ids':ids,'peak':peak,'score':gscore,'vertical_dev':medvert,'spatial':spatial,'rank':rank})
         groups.sort(key=lambda g:g['score'],reverse=True)
         return groups
+
+    def _learned_direction_bonus(self,angle):
+        """Small preference for directions the user repeatedly accepted manually.
+
+        This is deliberately a soft prior: it can rank plausible architecture, but it cannot
+        rescue a geometrically weak candidate.
+        """
+        if not self.learning_enabled or self.learning_data.get('count',0) < 2:
+            return 0.0
+        vals=[]
+        for sm in self.learning_data.get('samples',[]):
+            for f in sm.get('features',[]):
+                try: vals.append(float(f.get('angle')))
+                except Exception: pass
+        if not vals:
+            return 0.0
+        # Circular 180-degree distance; nearest accepted directions get at most a modest bonus.
+        d=min(self._angle_distance_deg(angle,v) for v in vals)
+        if d <= 4.0: return 0.34
+        if d <= 8.0: return 0.22
+        if d <= 14.0: return 0.10
+        return 0.0
 
     def _solve_direction_group_vp(self,group,segments,relaxed=False):
         """Robust weighted least-squares VP for one direction family."""
@@ -1464,6 +1494,9 @@ class MovieShotAnalyzer(QMainWindow):
         long_support=sum(1 for i in supp_global if segments[i]['length']>=0.11)
         if long_support<1 and not relaxed:return None
         score=sc + group.get('score',0.0)*0.28 + min(0.55,long_support*0.08)
+        score += self._learned_direction_bonus(group.get('peak',0.0))
+        # Reject compact/weak local families unless this is the relaxed fallback.
+        if group.get('spatial',0.0) < (0.30 if relaxed else 0.40): score*=0.58
         return {'vp':vp,'support':supp_global,'score':score,'err':err,'vertical_dev':group.get('vertical_dev',90.0),'direction_peak':group.get('peak',0.0),'group_rank':group.get('rank',0),'group_spatial':group.get('spatial',0.0)}
 
     def _build_direction_cluster_candidates(self,segments,relaxed=False):
@@ -1487,7 +1520,7 @@ class MovieShotAnalyzer(QMainWindow):
                 a,b=planar[i],planar[j]
                 # Require genuinely different dominant image directions.
                 d=self._angle_distance_deg(a.get('direction_peak',0),b.get('direction_peak',0))
-                if d < (16.0 if relaxed else 20.0): continue
+                if d < (20.0 if relaxed else 25.0): continue
                 sc=self._pair_candidate_score(a,b,segments,relaxed)
                 if sc<=-1e8:continue
                 # Distinct direction peaks and broad support are strongly rewarded.
@@ -1496,25 +1529,37 @@ class MovieShotAnalyzer(QMainWindow):
                 pairs.append((sc,a,b,d))
         pairs.sort(key=lambda x:x[0],reverse=True)
         out=[]; used_sigs=[]
+        # V5.19 deliberately refuses weak 2-direction solutions instead of drawing plausible-looking nonsense.
+        pair_floor=1.18 if relaxed else 1.48
         for sc,a,b,d in pairs:
+            if sc < pair_floor:
+                continue
             # label vp1/vp2 by x, preserving the older UI convention
             hs=sorted((a,b),key=lambda c:c['vp'][0])
             sig=tuple(sorted((round(a.get('direction_peak',0)/5)*5,round(b.get('direction_peak',0)/5)*5)))
-            if any(sum(abs(x-y) for x,y in zip(sig,osig))<12 for osig in used_sigs):
+            if any(len(sig)==len(osig) and sum(abs(x-y) for x,y in zip(sig,osig))<16 for osig in used_sigs):
                 continue
             item={'vp1':hs[0],'vp2':hs[1],'score':sc,'direction_signature':sig}
             if vertical:
                 vv=max(vertical,key=lambda c:(c['score']-c['err']*5.0))
-                if vv['err'] <= (0.055 if relaxed else 0.035) and len(vv['support'])>=2:
+                # VP3 requires notably stronger evidence than the two main directions.
+                if vv['err'] <= (0.042 if relaxed else 0.027) and len(vv['support'])>=3 and vv.get('group_spatial',0.0)>=0.38:
                     item['vp3']=vv
             out.append(item); used_sigs.append(sig)
             if len(out)>=3:break
-        # If only one true pair exists, expose single-direction alternatives rather than clones.
-        if len(out)<3:
+        # If no reliable pair exists, keep exactly one strong direction when possible.
+        # This is preferable to forcing a false 2/3-point perspective.
+        if not out:
+            strong=[]
+            single_floor=0.72 if relaxed else 0.95
             for c in solved:
-                if any(c is x.get('vp1') or c is x.get('vp2') or c is x.get('vp3') for x in out): continue
-                out.append({'vp1':c,'score':c['score'],'single':True,'direction_signature':(round(c.get('direction_peak',0)/5)*5,)})
-                if len(out)>=3:break
+                long_support=sum(1 for gi in c.get('support',[]) if segments[gi]['length']>=0.11)
+                if c['score']>=single_floor and len(c.get('support',[]))>=2 and long_support>=1 and c.get('group_spatial',0.0)>=0.34:
+                    strong.append(c)
+            strong.sort(key=lambda c:c['score'],reverse=True)
+            if strong:
+                c=strong[0]
+                out=[{'vp1':c,'score':c['score'],'single':True,'direction_signature':(round(c.get('direction_peak',0)/5)*5,),'confidence_state':'1方向のみ'}]
         return out
     def _choose_two_support_lines(self,cluster,segments):
         ids=cluster['support']
@@ -1681,22 +1726,25 @@ class MovieShotAnalyzer(QMainWindow):
             for gi in c['support']:
                 ss=segments[gi]; self.auto_detected_lines.append((key,tuple(ss['a']),tuple(ss['b'])))
             long_support=sum(1 for gi in c['support'] if segments[gi]['length']>=0.12)
-            q=15.0+min(30.0,long_support*6.0)+min(18.0,c['score']*14.0)-c['err']*360.0
+            q=12.0+min(28.0,long_support*5.5)+min(18.0,c['score']*12.0)-c['err']*380.0
             qualities.append(max(5.0,min(82.0,q)))
         if self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2'):
             x1,y1=self.vp1; x2,y2=self.vp2
             self.eye_level_y=(y1+y2)/2 if abs(x2-x1)<1e-9 else y1+(0.5-x1)*(y2-y1)/(x2-x1)
         self.perspective_source='auto'; self.auto_analysis_quality=sum(qualities)/len(qualities) if qualities else 0.0
         axes=sum(1 for k in ('vp1','vp2','vp3') if self._persp_axis_complete.get(k))
-        self.auto_analysis_note=f'候補 {chr(65+index)} / {axes}方向 / 建築長線優先 / 採用線 {len(self.auto_detected_lines)}本'
+        if cand.get('single'):
+            self.auto_analysis_quality=min(self.auto_analysis_quality,58.0)
+        state='1方向のみ・2方向は判定保留' if cand.get('single') else f'{axes}方向'
+        self.auto_analysis_note=f'候補 {chr(65+index)} / {state} / 建築長線優先 / 採用線 {len(self.auto_detected_lines)}本'
         self.auto_analysis_label.setText(f'自動解析：信頼度 {self.auto_analysis_quality:.0f}% / {self.auto_analysis_note}')
         for i,b in enumerate(getattr(self,'auto_candidate_buttons',[])):
             b.blockSignals(True); b.setChecked(i==index); b.blockSignals(False)
-        self.active_perspective_axis='vp3' if self._persp_axis_complete.get('vp3') else 'vp2'; self.perspective_step=1
+        self.active_perspective_axis=('vp3' if self._persp_axis_complete.get('vp3') else ('vp2' if self._persp_axis_complete.get('vp2') else 'vp1')); self.perspective_step=1
         self.update_perspective_panel_state(); self.update_perspective_labels(); self.save_perspective(); self.refresh()
 
     def auto_analyze_perspective(self):
-        """V5.18: direction-family clustering first, VP solve second."""
+        """V5.19: conservative direction clustering with reject/one-direction states."""
         if self.original is None:
             self.statusBar().showMessage('先に画像を開いてください。',4000); return
         if cv2 is None or np is None:
@@ -1711,27 +1759,23 @@ class MovieShotAnalyzer(QMainWindow):
                 relaxed=self._build_direction_cluster_candidates(segments,True)
                 if len(relaxed)>len(self.auto_candidates):
                     self.auto_candidates=relaxed; relaxed_used=True
-            # Last-resort compatibility fallback: old VP-intersection solver, only when the
-            # new direction-family solver cannot construct a usable solution.
-            if not self.auto_candidates:
-                clusters=self._find_vp_clusters(segments,10,True)
-                self.auto_candidates=self._build_auto_candidates(segments,clusters,True)
-                relaxed_used=True
+            # V5.19 intentionally does not fall back to the old free-intersection solver.
+            # If direction families are weak, report uncertainty instead of fabricating a VP pair.
             for i,b in enumerate(getattr(self,'auto_candidate_buttons',[])):
                 b.setEnabled(i<len(self.auto_candidates))
             if not self.auto_candidates:
                 self.auto_detected_lines=[]; self.auto_analysis_quality=0.0; self.auto_analysis_note=f'候補なし / 検出線 {len(segments)}本'
-                self.auto_analysis_label.setText(f'自動解析：候補なし / 検出線 {len(segments)}本 / 手動入力を使用')
-                self.statusBar().showMessage(f'自動解析：直線は {len(segments)} 本検出しましたが、信頼できる方向クラスタを作れませんでした。',8000); self.refresh(); return
+                self.auto_analysis_label.setText(f'自動解析：判定不能 / 有効なパース方向を検出できません / 検出線 {len(segments)}本')
+                self.statusBar().showMessage(f'自動解析：検出線 {len(segments)} 本。信頼できるパース方向が不足しています。手動入力を使用してください。',8000); self.refresh(); return
             if relaxed_used:
                 self.statusBar().showMessage('方向クラスタが不足したため緩和条件も使用しました。',4500)
             self.apply_auto_candidate(0)
-            # Make the method visible in the UI so tests can distinguish V5.18 behaviour.
+            # Make the method visible in the UI so tests can distinguish V5.19 behaviour.
             sig=self.auto_candidates[0].get('direction_signature')
             if sig:
                 self.auto_analysis_note += ' / 方向 ' + '-'.join(str(int(x))+'°' for x in sig)
                 self.auto_analysis_label.setText(f'自動解析：信頼度 {self.auto_analysis_quality:.0f}% / {self.auto_analysis_note}')
-            self.statusBar().showMessage(f'方向クラスタ解析完了：{len(self.auto_candidates)}候補。A/B/Cは異なる方向群から生成します。',7000)
+            self.statusBar().showMessage(f'保守的パース解析完了：{len(self.auto_candidates)}候補。弱い方向は無理に採用しません。',7000)
         except Exception as ex:
             self.statusBar().showMessage(f'自動解析でエラー: {ex}',9000)
         finally:
