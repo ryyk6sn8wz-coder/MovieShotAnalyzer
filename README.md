@@ -1,9 +1,14 @@
-# Movie Shot Analyzer V5.9.2
+# Movie Shot Analyzer V5.11
 
-V5.9.2 fixes the two-stroke pencil calibration flow.
+Perspective + lens foundation release.
 
-- The second calibration line is visible while you drag it.
-- Both the first and second calibration lines are drawn directly by mouse drag.
-- Perspective drawing uses a pencil-shaped cursor instead of the cross cursor.
-- After the second stroke is released, the VP is solved and both calibration lines become confirmed thin lines.
-- Existing VP rays, in-frame perspective grid, composition guides, basic-guide intersection markers, movable extra guides, and tunnel 8 handles remain available.
+- VP1 -> VP2 -> VP3 sequential pencil calibration.
+- Two pencil-drawn calibration lines per VP.
+- VP fan rays and in-frame perspective grid.
+- Far-off-screen VP ray support.
+- 35mm-equivalent focal length estimate from solved orthogonal vanishing points.
+- Horizontal/vertical FOV, focal range, lens class, and confidence display.
+- VP3 can improve confidence by checking three-axis consistency.
+- Existing composition guides, basic-guide intersection dots, movable added guides, tunnel 8 handles, helper lines, frame tools, and display correction are retained.
+
+Lens estimates are approximate and assume a centered principal point, square pixels, and orthogonal world directions. Cropping and stylized perspective can increase error.
