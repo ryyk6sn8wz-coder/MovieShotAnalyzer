@@ -53,6 +53,15 @@ def seg_intersection(a:QPointF,b:QPointF,c:QPointF,d:QPointF):
         return QPointF(x1+t*(x2-x1),y1+t*(y2-y1))
     return None
 
+def infinite_line_intersection(a,b,c,d):
+    """Intersection of two infinite lines in normalized image coordinates."""
+    x1,y1=a; x2,y2=b; x3,y3=c; x4,y4=d
+    den=(x1-x2)*(y3-y4)-(y1-y2)*(x3-x4)
+    if abs(den)<1e-9:return None
+    px=((x1*y2-y1*x2)*(x3-x4)-(x1-x2)*(x3*y4-y3*x4))/den
+    py=((x1*y2-y1*x2)*(y3-y4)-(y1-y2)*(x3*y4-y3*x4))/den
+    return (px,py)
+
 class StepControl(QWidget):
     """Minus/value/plus control with reliable 0.5 steps on Windows."""
     def __init__(self, minimum, maximum, value, step=0.5, decimals=1, parent=None):
@@ -71,7 +80,7 @@ class StepControl(QWidget):
 class ImageCanvas(QWidget):
     def __init__(self,owner):
         super().__init__(); self.owner=owner; self.pixmap=None; self.image_rect=QRectF(); self.drag_item=None
-        self.setAcceptDrops(True); self.setMinimumSize(640,420); self.setMouseTracking(True)
+        self.setAcceptDrops(True); self.setMinimumSize(640,420); self.setMouseTracking(True); self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     def dragEnterEvent(self,e):
         if e.mimeData().hasUrls():e.acceptProposedAction()
     def dropEvent(self,e):
@@ -165,7 +174,9 @@ class ImageCanvas(QWidget):
         target=av.size()
         target.setWidth(max(80,int(target.width()/ws))); target.setHeight(max(60,int(target.height()/ws)))
         sc=self.pixmap.size().scaled(target,Qt.AspectRatioMode.KeepAspectRatio)
-        x=av.left()+(av.width()-sc.width())/2; y=av.top()+(av.height()-sc.height())/2; self.image_rect=QRectF(x,y,sc.width(),sc.height())
+        z=max(.25,min(4.0,self.owner.view_zoom))
+        sw=max(1,int(sc.width()*z)); sh=max(1,int(sc.height()*z))
+        x=av.left()+(av.width()-sw)/2; y=av.top()+(av.height()-sh)/2; self.image_rect=QRectF(x,y,sw,sh)
         p.drawPixmap(self.image_rect.toRect(),self.pixmap)
         fr=self.frame_rect(); frame_poly=QPolygonF(self.frame_poly()); p.save(); p.setClipPath(self._frame_clip_path())
         lines=self._collect_lines(fr)
@@ -321,71 +332,52 @@ class ImageCanvas(QWidget):
         if r.width()<=1 or r.height()<=1:return (0.0,0.0)
         return ((pos.x()-r.left())/r.width(), (pos.y()-r.top())/r.height())
     def _draw_perspective(self,p):
-        """CLIP STUDIO風の手動パース定規。
-
-        各VPに2本の方向定規を持たせ、白い方向ハンドルをドラッグして
-        画面内の実線へ合わせる。線はVPを通って作業領域全体へ延長される。
-        """
+        """VanishPoint-style calibration: two 2-anchor lines solve each VP."""
         if self.pixmap is None:return
-        vp_defs=(
-            ('VP1', self.owner.vp1, '#00d4ff', 'vp1'),
-            ('VP2', self.owner.vp2, '#ff4fa3', 'vp2'),
-            ('VP3', self.owner.vp3, '#7ee787', 'vp3'),
-        )
+        vp_defs=(('VP1',self.owner.vp1,'#00d4ff','vp1'),('VP2',self.owner.vp2,'#ff4fa3','vp2'),('VP3',self.owner.vp3,'#7ee787','vp3'))
+        # Horizon/eye level is solved from VP1 and VP2 rather than dragged independently.
+        h1=self._image_norm_to_point(*self.owner.vp1); h2=self._image_norm_to_point(*self.owner.vp2)
+        ec=QColor('#ffe66d'); ec.setAlpha(190); ep=QPen(ec); ep.setWidthF(1.4); ep.setStyle(Qt.PenStyle.DashLine); p.setPen(ep)
+        hdx=h2.x()-h1.x(); hdy=h2.y()-h1.y(); hln=max(1e-6,math.hypot(hdx,hdy)); hext=10000.0/hln
+        ha=QPointF(h1.x()-hdx*hext,h1.y()-hdy*hext); hb=QPointF(h1.x()+hdx*hext,h1.y()+hdy*hext); p.drawLine(ha,hb)
         eye_y=self.image_rect.top()+self.image_rect.height()*self.owner.eye_level_y
-        ec=QColor('#ffe66d'); ec.setAlpha(210); ep=QPen(ec); ep.setWidthF(1.5); ep.setStyle(Qt.PenStyle.DashLine); p.setPen(ep)
-        p.drawLine(QPointF(0,eye_y),QPointF(self.width(),eye_y))
-
-        # Perspective-ruler guide lines.  They are not tied to the green frame.
-        # Each white handle defines one line through its VP, and that line is
-        # extended far beyond the image; QPainter clips it to the workspace.
+        # Two calibration segments per axis. Each segment has exactly two anchors.
         for label,xy,color,key in vp_defs:
-            vp=self._image_norm_to_point(*xy)
-            c=QColor(color); c.setAlpha(190); pen=QPen(c); pen.setWidthF(1.35); p.setPen(pen)
-            for hxy in self.owner.perspective_guides[key]:
-                hp=self._image_norm_to_point(*hxy)
-                dx=hp.x()-vp.x(); dy=hp.y()-vp.y(); ln=math.hypot(dx,dy)
-                if ln<1e-6: continue
-                scale=10000.0/ln
-                a=QPointF(vp.x()-dx*scale, vp.y()-dy*scale)
-                b=QPointF(vp.x()+dx*scale, vp.y()+dy*scale)
-                p.drawLine(a,b)
-
-        # VP markers.
-        for label,xy,color,key in vp_defs:
-            vp=self._image_norm_to_point(*xy)
-            c=QColor(color); c.setAlpha(245); p.setBrush(c); p.setPen(Qt.PenStyle.NoPen)
-            p.drawEllipse(QRectF(vp.x()-7,vp.y()-7,14,14))
-            p.setPen(QColor('#f5f7fa')); p.drawText(QRectF(vp.x()+10,vp.y()-12,52,24),Qt.AlignmentFlag.AlignVCenter,label)
-
-        # Direction handles: white fill + the owning VP color as outline.
-        if self.owner.show_perspective_handles.isChecked():
-            for label,xy,color,key in vp_defs:
+            c=QColor(color); c.setAlpha(230); pen=QPen(c); pen.setWidthF(2.0); p.setPen(pen)
+            for li,line in enumerate(self.owner.perspective_lines[key]):
+                a=self._image_norm_to_point(*line[0]); b=self._image_norm_to_point(*line[1]); p.drawLine(a,b)
+                # faint infinite extension makes convergence easy to read
+                dx=b.x()-a.x(); dy=b.y()-a.y(); ln=math.hypot(dx,dy)
+                if ln>1e-6:
+                    ext=10000.0/ln; cc=QColor(color); cc.setAlpha(70); xp=QPen(cc); xp.setWidthF(1.0); xp.setStyle(Qt.PenStyle.DashLine); p.setPen(xp)
+                    p.drawLine(QPointF(a.x()-dx*ext,a.y()-dy*ext),QPointF(a.x()+dx*ext,a.y()+dy*ext)); p.setPen(pen)
+            if self.owner.show_perspective_handles.isChecked():
                 outline=QPen(QColor(color)); outline.setWidthF(2.0); p.setPen(outline); p.setBrush(QColor('#ffffff'))
-                for idx,hxy in enumerate(self.owner.perspective_guides[key]):
-                    hp=self._image_norm_to_point(*hxy)
-                    p.drawEllipse(QRectF(hp.x()-6,hp.y()-6,12,12))
-                    p.setPen(QColor('#f5f7fa'))
-                    p.drawText(QRectF(hp.x()+8,hp.y()-10,28,20),Qt.AlignmentFlag.AlignVCenter,str(idx+1))
-                    p.setPen(outline)
-
+                for li,line in enumerate(self.owner.perspective_lines[key]):
+                    for ei,ptxy in enumerate(line):
+                        hp=self._image_norm_to_point(*ptxy); p.drawEllipse(QRectF(hp.x()-6,hp.y()-6,12,12))
+        # solved VP markers
+        for label,xy,color,key in vp_defs:
+            vp=self._image_norm_to_point(*xy); c=QColor(color); c.setAlpha(245); p.setBrush(c); p.setPen(Qt.PenStyle.NoPen); p.drawEllipse(QRectF(vp.x()-7,vp.y()-7,14,14))
+            p.setPen(QColor('#f5f7fa')); p.drawText(QRectF(vp.x()+10,vp.y()-12,58,24),Qt.AlignmentFlag.AlignVCenter,label)
         p.setPen(QColor('#ffe66d')); p.drawText(QRectF(8,eye_y-23,120,20),Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter,'EYE LEVEL')
 
     def _perspective_hit(self,pos):
         if not self.owner.show_perspective.isChecked() or self.pixmap is None:return None
-        # VP markers first.
-        for name,xy in (('vp1',self.owner.vp1),('vp2',self.owner.vp2),('vp3',self.owner.vp3)):
-            pt=self._image_norm_to_point(*xy)
-            if math.hypot(pos.x()-pt.x(),pos.y()-pt.y())<14:return ('perspective_vp',name)
-        # Then direction handles, similar to a perspective ruler control point.
         if self.owner.show_perspective_handles.isChecked():
             for name in ('vp1','vp2','vp3'):
-                for i,xy in enumerate(self.owner.perspective_guides[name]):
-                    pt=self._image_norm_to_point(*xy)
-                    if math.hypot(pos.x()-pt.x(),pos.y()-pt.y())<13:return ('perspective_guide',name,i)
-        ey=self.image_rect.top()+self.image_rect.height()*self.owner.eye_level_y
-        if abs(pos.y()-ey)<8:return ('eye_level',)
+                for li,line in enumerate(self.owner.perspective_lines[name]):
+                    for ei,xy in enumerate(line):
+                        pt=self._image_norm_to_point(*xy)
+                        if math.hypot(pos.x()-pt.x(),pos.y()-pt.y())<13:return ('perspective_anchor',name,li,ei)
         return None
+
+    def wheelEvent(self,e):
+        if self.pixmap is None:return
+        steps=e.angleDelta().y()/120.0
+        if abs(steps)<0.01:return
+        self.owner.view_zoom=max(.25,min(4.0,self.owner.view_zoom*(1.12**steps)))
+        self.owner.update_zoom_label(); self.update(); e.accept()
 
     def _frame_clip_path(self):
         from PySide6.QtGui import QPainterPath
@@ -445,7 +437,7 @@ class ImageCanvas(QWidget):
         if not hit:
             self.unsetCursor(); return
         typ=hit[0]
-        if typ in ('perspective_vp','perspective_guide'): self.setCursor(Qt.CursorShape.SizeAllCursor)
+        if typ in ('perspective_vp','perspective_anchor'): self.setCursor(Qt.CursorShape.SizeAllCursor)
         elif typ=='eye_level': self.setCursor(Qt.CursorShape.SizeVerCursor)
         elif typ=='frame_corner': self.setCursor(Qt.CursorShape.SizeFDiagCursor)
         elif typ=='frame_edge':
@@ -464,7 +456,7 @@ class ImageCanvas(QWidget):
             self.owner.selected_comp_guide=None; self.owner.reset_comp_btn.setEnabled(False); self.update()
         if hit:
             typ=hit[0]
-            if typ in ('perspective_vp','perspective_guide','eye_level'):
+            if typ in ('perspective_vp','perspective_anchor','eye_level'):
                 self._drag_start=e.position()
                 self._persp_drag_orig=(tuple(self.owner.vp1),tuple(self.owner.vp2),tuple(self.owner.vp3),float(self.owner.eye_level_y))
             if typ in ('comp_handle','comp_line'):
@@ -490,23 +482,12 @@ class ImageCanvas(QWidget):
             if name=='vp1': self.owner.vp1=(nx,ny)
             elif name=='vp2': self.owner.vp2=(nx,ny)
             else: self.owner.vp3=(nx,ny)
-            # In 2-point perspective VP1/VP2 lie on the eye level. VP3 is
-            # intentionally independent for vertical convergence.
-            if self.owner.link_vps_eye.isChecked() and name in ('vp1','vp2'):
-                self.owner.eye_level_y=ny
-                if name=='vp1': self.owner.vp2=(self.owner.vp2[0],ny)
-                else: self.owner.vp1=(self.owner.vp1[0],ny)
             self.owner.update_perspective_labels()
-        elif typ=='perspective_guide':
-            name,i=self.drag_item[1],self.drag_item[2]
-            nx,ny=self._point_to_image_norm(pos)
-            nx=max(-3.0,min(4.0,nx)); ny=max(-2.0,min(3.0,ny))
-            guides=list(self.owner.perspective_guides[name]); guides[i]=(nx,ny); self.owner.perspective_guides[name]=guides
-        elif typ=='eye_level':
-            _,ny=self._point_to_image_norm(pos); ny=max(-2.0,min(3.0,ny)); self.owner.eye_level_y=ny
-            if self.owner.link_vps_eye.isChecked():
-                self.owner.vp1=(self.owner.vp1[0],ny); self.owner.vp2=(self.owner.vp2[0],ny)
-            self.owner.update_perspective_labels()
+        elif typ=='perspective_anchor':
+            name,li,ei=self.drag_item[1],self.drag_item[2],self.drag_item[3]
+            nx,ny=self._point_to_image_norm(pos); nx=max(-3.0,min(4.0,nx)); ny=max(-2.0,min(3.0,ny))
+            lines=[[tuple(pt) for pt in line] for line in self.owner.perspective_lines[name]]; lines[li][ei]=(nx,ny); self.owner.perspective_lines[name]=lines
+            self.owner.solve_perspective_axis(name)
         elif typ=='comp_handle':
             name,i=self.drag_item[1],self.drag_item[2]; d=self.owner.comp_guides[name]; nx,ny=self._pos_to_norm(pos,fr)
             if name=='radiating': d['center']=(nx,ny)
@@ -583,16 +564,16 @@ class ImageCanvas(QWidget):
         self.update()
     def mouseReleaseEvent(self,e):
         if self.drag_item and self.drag_item[0].startswith('frame_'): self.owner.save_frame()
-        if self.drag_item and self.drag_item[0] in ('perspective_vp','perspective_guide','eye_level'): self.owner.save_perspective()
+        if self.drag_item and self.drag_item[0] in ('perspective_vp','perspective_anchor','eye_level'): self.owner.save_perspective()
         self.drag_item=None
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.4 Perspective Ruler'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.5 VanishPoint Calibration'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
-        self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50
-        self.perspective_guides={'vp1':[(.18,.28),(.18,.72)], 'vp2':[(.82,.28),(.82,.72)], 'vp3':[(.30,.22),(.70,.22)]}
+        self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
+        self.perspective_lines=self.default_perspective_lines()
         self.helper_v=[]; self.helper_h=[]; self.helper_free=[]; self.selected_helper=None
         self.selected_comp_guide=None
         self.comp_guides={
@@ -608,14 +589,14 @@ class MovieShotAnalyzer(QMainWindow):
             'pyramid': {'points': [(.5,.12),(.14,.88),(.86,.88)]},
         }
         self.helper_color='#36d1ff'; self.point_color='#ff3838'; self.frame_color='#20f26b'
-        self._build_ui(); self._style(); self.statusBar().showMessage('V5.4 — CLIP STUDIO風パース定規 / VP1・VP2・VP3')
+        self._build_ui(); self._style(); self.statusBar().showMessage('V5.5 — 2アンカー線×2本でVP自動算出 / ホイールズーム')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
         root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.4 / CLIP STUDIO風パース定規 + VP3'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.5 / VanishPoint方式パースキャリブレーション'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -669,15 +650,15 @@ class MovieShotAnalyzer(QMainWindow):
         fcbtn=QPushButton('フレーム色'); fcbtn.clicked.connect(self.choose_frame_color); fg.addWidget(fcbtn,2,0,1,2); c.addLayout(fg)
         fhint=QLabel('通常は「緑フレームを固定」をON推奨。フレームを直す時だけOFFにすると、四隅・辺中央・枠内ドラッグが使えます。'); fhint.setObjectName('note'); fhint.setWordWrap(True); c.addWidget(fhint)
 
-        self.section(c,'パース定規（手動）')
+        self.section(c,'パースキャリブレーション')
         self.show_perspective=QCheckBox('VP1 / VP2 / VP3 とアイレベルを表示'); self.show_perspective.setChecked(False); self.show_perspective.toggled.connect(self.refresh); c.addWidget(self.show_perspective)
-        self.show_perspective_handles=QCheckBox('定規の方向ハンドル（白○）を表示'); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.toggled.connect(self.refresh); c.addWidget(self.show_perspective_handles)
-        self.link_vps_eye=QCheckBox('VP1・VP2をアイレベルに連動'); self.link_vps_eye.setChecked(True); c.addWidget(self.link_vps_eye)
+        self.show_perspective_handles=QCheckBox('基準線のアンカー（白○）を表示'); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.toggled.connect(self.refresh); c.addWidget(self.show_perspective_handles)
         row=QHBoxLayout(); resetp=QPushButton('パース定規を初期位置へ'); resetp.clicked.connect(self.reset_perspective); row.addWidget(resetp); c.addLayout(row)
-        self.persp_label=QLabel('VP1 / VP2 / VP3 / Eye'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); c.addWidget(self.persp_label)
-        phint=QLabel('CLIP STUDIOのパース定規を参考にした操作です。色付き○=消失点、白○=方向ハンドル。白○を背景の直線に合わせると、そのVPを通る定規線の角度を個別に調整できます。VP3は縦方向の収束用で、アイレベルとは独立しています。緑フレームは固定ONなら動きません。'); phint.setObjectName('note'); phint.setWordWrap(True); c.addWidget(phint)
+        self.persp_label=QLabel('VP1 / VP2 / VP3 / Horizon'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); c.addWidget(self.persp_label)
+        phint=QLabel('VanishPoint方式です。VP1/VP2/VP3ごとに基準線を2本用意し、各基準線は白○2点で合わせます。2本の交点からVPを自動算出します。緑フレームは固定ONのまま操作できます。マウスホイールで画面を拡大・縮小できます。'); phint.setObjectName('note'); phint.setWordWrap(True); c.addWidget(phint)
         row=QHBoxLayout(); row.addWidget(QLabel('作業領域')); self.workspace_scale=QSlider(Qt.Orientation.Horizontal); self.workspace_scale.setRange(100,400); self.workspace_scale.setValue(180); self.workspace_scale.valueChanged.connect(self.refresh); row.addWidget(self.workspace_scale,1); self.workspace_label=QLabel('180%'); self.workspace_label.setFixedWidth(46); self.workspace_scale.valueChanged.connect(lambda v:self.workspace_label.setText(f'{v}%')); row.addWidget(self.workspace_label); c.addLayout(row)
         whint=QLabel('値を大きくすると画像が小さくなり、画像外のVPを置く余白が広がります。'); whint.setObjectName('note'); whint.setWordWrap(True); c.addWidget(whint)
+        row=QHBoxLayout(); row.addWidget(QLabel('ホイールズーム')); self.zoom_label=QLabel('100%'); row.addWidget(self.zoom_label); zreset=QPushButton('100%に戻す'); zreset.clicked.connect(self.reset_zoom); row.addWidget(zreset); c.addLayout(row)
 
         self.section(c,'表示補正（元画像は変更しません）')
         self.sliders={}
@@ -714,11 +695,10 @@ class MovieShotAnalyzer(QMainWindow):
         try:
             with Image.open(p) as src:self.original=src.convert('RGB').copy()
             self.frame_quad=[tuple(q) for q in self.frames.get(str(p),[(0.,0.),(1.,0.),(1.,1.),(0.,1.)])]
-            pd=self.perspective_by_image.get(str(p),{'vp1':(-0.30,0.50),'vp2':(1.30,0.50),'vp3':(0.50,-0.65),'eye':0.50,
-                'guides':{'vp1':[(.18,.28),(.18,.72)],'vp2':[(.82,.28),(.82,.72)],'vp3':[(.30,.22),(.70,.22)]}})
+            pd=self.perspective_by_image.get(str(p),{'vp1':(-0.30,0.50),'vp2':(1.30,0.50),'vp3':(0.50,-0.65),'eye':0.50,'lines':self.default_perspective_lines()})
             self.vp1=tuple(pd.get('vp1',(-0.30,0.50))); self.vp2=tuple(pd.get('vp2',(1.30,0.50))); self.vp3=tuple(pd.get('vp3',(0.50,-0.65))); self.eye_level_y=float(pd.get('eye',0.50))
             import copy
-            self.perspective_guides=copy.deepcopy(pd.get('guides',{'vp1':[(.18,.28),(.18,.72)],'vp2':[(.82,.28),(.82,.72)],'vp3':[(.30,.22),(.70,.22)]}))
+            self.perspective_lines=copy.deepcopy(pd.get('lines',self.default_perspective_lines()))
             self.update_perspective_labels()
             self.update_display(); self.file_label.setText(f'{p.name}\n{self.current_index+1} / {len(self.paths)}\n{self.original.width} × {self.original.height} px'); self.statusBar().showMessage(str(p))
         except Exception as ex:self.file_label.setText(f'読み込み失敗: {p.name}\n{ex}')
@@ -747,17 +727,46 @@ class MovieShotAnalyzer(QMainWindow):
     def _update_nav(self): self.prev_button.setEnabled(self.current_index>0); self.next_button.setEnabled(0<=self.current_index<len(self.paths)-1)
     def refresh(self): self.canvas.update()
 
+    def default_perspective_lines(self):
+        return {
+            'vp1': [[(.16,.34),(.46,.43)],[(.16,.72),(.46,.59)]],
+            'vp2': [[(.54,.43),(.84,.34)],[(.54,.59),(.84,.72)]],
+            'vp3': [[(.36,.78),(.43,.30)],[(.64,.78),(.57,.30)]],
+        }
+    def solve_perspective_axis(self,name):
+        lines=self.perspective_lines.get(name,[])
+        if len(lines)<2:return
+        ip=infinite_line_intersection(lines[0][0],lines[0][1],lines[1][0],lines[1][1])
+        if ip is None:return
+        x=max(-6.0,min(7.0,ip[0])); y=max(-5.0,min(6.0,ip[1]))
+        if name=='vp1': self.vp1=(x,y)
+        elif name=='vp2': self.vp2=(x,y)
+        else: self.vp3=(x,y)
+        # Eye level is the horizon through VP1/VP2; store its y at image center for the label.
+        if name in ('vp1','vp2'):
+            x1,y1=self.vp1; x2,y2=self.vp2
+            if abs(x2-x1)>1e-9:self.eye_level_y=y1+(0.5-x1)*(y2-y1)/(x2-x1)
+            else:self.eye_level_y=(y1+y2)/2.0
+        self.update_perspective_labels()
+        if hasattr(self,'canvas'): self.canvas.update()
+    def solve_all_perspective_axes(self):
+        for n in ('vp1','vp2','vp3'): self.solve_perspective_axis(n)
+    def reset_zoom(self):
+        self.view_zoom=1.0; self.update_zoom_label(); self.refresh()
+    def update_zoom_label(self):
+        if hasattr(self,'zoom_label'): self.zoom_label.setText(f'{round(self.view_zoom*100):d}%')
+
     def save_perspective(self):
         if 0<=self.current_index<len(self.paths):
             import copy
-            self.perspective_by_image[str(self.paths[self.current_index])]={'vp1':tuple(self.vp1),'vp2':tuple(self.vp2),'vp3':tuple(self.vp3),'eye':float(self.eye_level_y),'guides':copy.deepcopy(self.perspective_guides)}
+            self.perspective_by_image[str(self.paths[self.current_index])]={'vp1':tuple(self.vp1),'vp2':tuple(self.vp2),'vp3':tuple(self.vp3),'eye':float(self.eye_level_y),'lines':copy.deepcopy(self.perspective_lines)}
     def reset_perspective(self):
-        self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50
-        self.perspective_guides={'vp1':[(.18,.28),(.18,.72)], 'vp2':[(.82,.28),(.82,.72)], 'vp3':[(.30,.22),(.70,.22)]}
+        self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
+        self.perspective_lines=self.default_perspective_lines()
         self.update_perspective_labels(); self.save_perspective(); self.refresh()
     def update_perspective_labels(self):
         if hasattr(self,'persp_label'):
-            self.persp_label.setText(f'VP1: ({self.vp1[0]:.2f}, {self.vp1[1]:.2f})  /  VP2: ({self.vp2[0]:.2f}, {self.vp2[1]:.2f})\nVP3: ({self.vp3[0]:.2f}, {self.vp3[1]:.2f})  /  Eye: {self.eye_level_y:.2f}')
+            self.persp_label.setText(f'VP1: ({self.vp1[0]:.2f}, {self.vp1[1]:.2f})  /  VP2: ({self.vp2[0]:.2f}, {self.vp2[1]:.2f})\nVP3: ({self.vp3[0]:.2f}, {self.vp3[1]:.2f})  /  Horizon@Center: {self.eye_level_y:.2f}')
 
     def comp_edit_toggled(self,on):
         if not on:

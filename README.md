@@ -1,24 +1,29 @@
-# Movie Shot Analyzer V5.4 — Perspective Ruler
+# Movie Shot Analyzer V5.5
 
-V5.2.3 の構図ガイドを維持したまま、パース操作を CLIP STUDIO PAINT のパース定規を参考にした手動定規方式へ変更した試作版です。
+V5.5 adds a VanishPoint-style perspective calibration workflow.
 
-## V5.4 の変更
-- 緑の実映像フレームに「固定（誤操作防止）」を追加。初期状態は固定ON。
-- VP1 / VP2 / VP3 を実装。
-- VP1 / VP2 はアイレベル連動可能。VP3 は縦方向収束用として独立。
-- 各VPに2個の白い方向ハンドルを追加。
-- 白い方向ハンドルをドラッグすると、そのVPを通る定規線の角度を変更。
-- パース定規線は緑フレームではなく作業領域全体へ延長される。
-- 消失点・方向ハンドルは画像外にも配置可能。
-- 作業領域 100〜400% を維持。
-- 画像ごとに VP1 / VP2 / VP3 / Eye Level / 定規ハンドル位置を保持。
+## Perspective calibration
+- VP1 / VP2 / VP3 supported.
+- Each vanishing direction uses **two calibration lines**.
+- Each calibration line has **exactly two white anchor points**.
+- Drag the two anchors so the line lies on a real edge in the image.
+- The intersection of the two calibration lines is solved automatically as the VP.
+- VP1 + VP2 automatically define the horizon / eye-level line.
+- VP3 is solved independently for vertical convergence.
+- Colored VP markers are results; normal calibration is performed with the white anchors.
+- The green movie-frame transform is locked by default to prevent accidental movement.
 
-## 操作
-1. 「VP1 / VP2 / VP3 とアイレベルを表示」をON。
-2. 色付き○をドラッグして消失点を置く。
-3. 白○を背景の直線へ合わせる。各白○から対応VPを通る定規線が伸びる。
-4. VP1/VP2を同じアイレベルにしたい場合は連動ON。
-5. VP3は建物の縦線などの収束へ合わせる。
-6. 緑フレームは通常「固定」をONにし、黒帯/実映像範囲を直す時だけOFFにする。
+## View navigation
+- Mouse wheel zooms the canvas view from 25% to 400%.
+- `100%に戻す` resets wheel zoom.
+- The existing workspace scale remains available to create extra room for off-image vanishing points.
 
-※ V5.4 は手動パース定規を先に安定させる段階です。自動VP候補検出とレンズ推定はまだ未実装です。
+## Existing features retained
+- Basic composition guides and filled intersection points.
+- Movable additional composition guides.
+- Tunnel guide with 8 edit handles.
+- Actual movie-frame / black-bar detection.
+- Display-only brightness, contrast, gamma and saturation correction.
+
+## Windows build
+Use the existing GitHub Actions workflow. Upload/overwrite the six repository files, commit, then run the workflow.
