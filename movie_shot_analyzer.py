@@ -348,17 +348,66 @@ class ImageCanvas(QWidget):
             vp=self._image_norm_to_point(*xy); count=max(2,int(self.owner.vp_ray_counts.get(key,12)))
             rc=QColor(color); rc.setAlpha(155); rp=QPen(rc); rp.setWidthF(1.0); p.setPen(rp)
             radius=20000.0
-            # 180 degrees is sufficient because each guide is drawn as a full line through the VP.
-            for i in range(count):
-                a=math.pi*i/count
+
+            # Aim the fan through the actual image rectangle.  If a VP is far outside
+            # the image, a uniform 180-degree fan leaves most rays missing the picture.
+            # Instead, sample only the angular interval subtended by the frame so every
+            # requested ray crosses the image.  When the VP is inside the frame, keep a
+            # conventional 180-degree full-line fan.
+            r=self.image_rect
+            inside=(r.left() <= vp.x() <= r.right() and r.top() <= vp.y() <= r.bottom())
+            if inside:
+                angles=[math.pi*i/count for i in range(count)]
+            else:
+                corners=[QPointF(r.left(),r.top()),QPointF(r.right(),r.top()),
+                         QPointF(r.right(),r.bottom()),QPointF(r.left(),r.bottom())]
+                raw=[math.atan2(c.y()-vp.y(),c.x()-vp.x()) for c in corners]
+                # Find the shortest circular arc containing all four corner directions.
+                vals=sorted((a%(2*math.pi)) for a in raw)
+                gaps=[]
+                for i,a0 in enumerate(vals):
+                    a1=vals[(i+1)%len(vals)] + (2*math.pi if i==len(vals)-1 else 0)
+                    gaps.append((a1-a0,i))
+                _,gi=max(gaps)
+                start=vals[(gi+1)%len(vals)]
+                end=vals[gi] + (2*math.pi if vals[gi] < start else 0)
+                span=max(1e-6,end-start)
+                if count==1:
+                    angles=[start+span*0.5]
+                else:
+                    # Small inset keeps the outermost rays visibly inside the frame,
+                    # rather than merely grazing a single corner pixel.
+                    inset=min(span*0.04, math.radians(1.0))
+                    a0=start+inset; a1=end-inset
+                    if a1<=a0:
+                        a0=start; a1=end
+                    angles=[a0+(a1-a0)*i/(count-1) for i in range(count)]
+            for a in angles:
                 dx=math.cos(a)*radius; dy=math.sin(a)*radius
                 p.drawLine(QPointF(vp.x()-dx,vp.y()-dy),QPointF(vp.x()+dx,vp.y()+dy))
+
+            # VanishPoint-like in-frame perspective grid.  Use the same solved VP family,
+            # but clip it strictly to the editable green frame so the image itself gets a
+            # readable mesh while the longer fan rays can remain available outside.
+            if hasattr(self.owner,'show_perspective_grid') and self.owner.show_perspective_grid.isChecked():
+                p.save()
+                p.setClipPath(self._frame_clip_path())
+                gc=QColor(color); gc.setAlpha(105); gp=QPen(gc); gp.setWidthF(0.9); p.setPen(gp)
+                for a in angles:
+                    dx=math.cos(a)*radius; dy=math.sin(a)*radius
+                    p.drawLine(QPointF(vp.x()-dx,vp.y()-dy),QPointF(vp.x()+dx,vp.y()+dy))
+                p.restore()
 
         # Two calibration segments per axis. Only the currently edited segment gets white anchors.
         for label,xy,color,key in vp_defs:
             for li,line in enumerate(self.owner.perspective_lines[key]):
                 active=(key==self.owner.active_perspective_axis and li==self.owner.perspective_step)
                 if key==self.owner.active_perspective_axis and self.owner.perspective_step==0 and li==1:
+                    continue
+                # In pencil mode the second calibration line stays completely hidden
+                # until the user actually starts drawing it.
+                if (key==self.owner.active_perspective_axis and li==1
+                        and not self.owner._persp_anchor_touched.get((key,1),set())):
                     continue
                 complete = self.owner._persp_axis_complete.get(key, False)
                 c=QColor(color); c.setAlpha(235 if active else 85); pen=QPen(c)
@@ -386,6 +435,8 @@ class ImageCanvas(QWidget):
         if not self.owner.show_perspective.isChecked() or self.pixmap is None:return None
         if self.owner.show_perspective_handles.isChecked():
             name=self.owner.active_perspective_axis; li=self.owner.perspective_step
+            if li==1 and not self.owner._persp_anchor_touched.get((name,1),set()):
+                return None
             line=self.owner.perspective_lines[name][li]
             for ei,xy in enumerate(line):
                 pt=self._image_norm_to_point(*xy)
@@ -455,6 +506,10 @@ class ImageCanvas(QWidget):
     def _update_cursor(self,pos):
         hit=self._hit(pos)
         if not hit:
+            if (hasattr(self.owner,'right_tabs') and self.owner.right_tabs.currentIndex()==0
+                    and hasattr(self.owner,'perspective_pencil') and self.owner.perspective_pencil.isChecked()
+                    and self.image_rect.contains(pos)):
+                self.setCursor(Qt.CursorShape.CrossCursor); return
             self.unsetCursor(); return
         typ=hit[0]
         if typ in ('perspective_vp','perspective_anchor'): self.setCursor(Qt.CursorShape.SizeAllCursor)
@@ -471,31 +526,57 @@ class ImageCanvas(QWidget):
 
     def mousePressEvent(self,e):
         if e.button()!=Qt.MouseButton.LeftButton:return
-        hit=self._hit(e.position()); self.drag_item=hit
+        pos=e.position()
+        # Pencil-style calibration has canvas priority while the Perspective tab is active.
+        # Existing white endpoint handles still win so a finished line can be fine-tuned.
+        phit=self._perspective_hit(pos)
+        in_image=self.image_rect.contains(pos)
+        pencil_on=(hasattr(self.owner,'perspective_pencil') and self.owner.perspective_pencil.isChecked())
+        persp_tab=(hasattr(self.owner,'right_tabs') and self.owner.right_tabs.currentIndex()==0)
+        if persp_tab and pencil_on and in_image and not phit:
+            name=self.owner.active_perspective_axis; li=self.owner.perspective_step
+            nx,ny=self._point_to_image_norm(pos)
+            lines=[[tuple(pt) for pt in line] for line in self.owner.perspective_lines[name]]
+            lines[li]=[(nx,ny),(nx,ny)]
+            self.owner.perspective_lines[name]=lines
+            self.drag_item=('perspective_draw',name,li)
+            self._persp_draw_start=(nx,ny)
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.update(); return
+
+        hit=self._hit(pos); self.drag_item=hit
         if not hit and self.owner.edit_comp_guides.isChecked():
             self.owner.selected_comp_guide=None; self.owner.reset_comp_btn.setEnabled(False); self.update()
         if hit:
             typ=hit[0]
             if typ in ('perspective_vp','perspective_anchor','eye_level'):
-                self._drag_start=e.position()
+                self._drag_start=pos
                 self._persp_drag_orig=(tuple(self.owner.vp1),tuple(self.owner.vp2),tuple(self.owner.vp3),float(self.owner.eye_level_y))
             if typ in ('comp_handle','comp_line'):
                 self.owner.selected_comp_guide=hit[1]; self.owner.reset_comp_btn.setEnabled(True); self.owner.selected_helper=None; self.owner.update_helper_buttons(); self.update()
                 if typ=='comp_line' or (typ=='comp_handle' and hit[1]=='tunnel' and hit[2]>=4):
                     import copy
-                    self._drag_start=e.position(); self._comp_drag_orig=copy.deepcopy(self.owner.comp_guides[hit[1]])
+                    self._drag_start=pos; self._comp_drag_orig=copy.deepcopy(self.owner.comp_guides[hit[1]])
             if typ in ('v','h','free_line','free_end'):
                 kind='free' if typ.startswith('free') else typ
                 self.owner.selected_helper=(kind,hit[1]); self.owner.update_helper_buttons(); self.update()
             if typ=='free_line':
-                fr=self.frame_rect(); self._drag_start=e.position(); self._drag_orig=self.owner.helper_free[hit[1]]
+                fr=self.frame_rect(); self._drag_start=pos; self._drag_orig=self.owner.helper_free[hit[1]]
             elif typ in ('frame_edge','frame_move'):
-                self._drag_start=e.position(); self._frame_drag_orig=[tuple(q) for q in self.owner.frame_quad]
+                self._drag_start=pos; self._frame_drag_orig=[tuple(q) for q in self.owner.frame_quad]
     def mouseMoveEvent(self,e):
         if not self.drag_item:
             self._update_cursor(e.position()); return
         fr=self.frame_rect(); typ=self.drag_item[0]; pos=e.position()
-        if typ=='perspective_vp':
+        if typ=='perspective_draw':
+            name,li=self.drag_item[1],self.drag_item[2]
+            nx,ny=self._point_to_image_norm(pos)
+            nx=max(-3.0,min(4.0,nx)); ny=max(-2.0,min(3.0,ny))
+            lines=[[tuple(pt) for pt in line] for line in self.owner.perspective_lines[name]]
+            lines[li]=[tuple(self._persp_draw_start),(nx,ny)]
+            self.owner.perspective_lines[name]=lines
+            if li==1: self.owner.solve_perspective_axis(name)
+        elif typ=='perspective_vp':
             name=self.drag_item[1]; nx,ny=self._point_to_image_norm(pos)
             # Allow off-image VPs. Bounds keep the marker recoverable in the workspace.
             nx=max(-3.0,min(4.0,nx)); ny=max(-2.0,min(3.0,ny))
@@ -589,6 +670,26 @@ class ImageCanvas(QWidget):
         self.update()
     def mouseReleaseEvent(self,e):
         if self.drag_item and self.drag_item[0].startswith('frame_'): self.owner.save_frame()
+        if self.drag_item and self.drag_item[0]=='perspective_draw':
+            name,li=self.drag_item[1],self.drag_item[2]
+            line=self.owner.perspective_lines[name][li]
+            dx=line[1][0]-line[0][0]; dy=line[1][1]-line[0][1]
+            # Ignore accidental clicks; a real pencil stroke needs a measurable drag.
+            if math.hypot(dx,dy) >= 0.015:
+                self.owner._persp_anchor_touched[(name,li)]={0,1}
+                if li==0:
+                    self.owner.begin_second_perspective_line(name)
+                    self.owner.perspective_step=1
+                    self.owner._persp_anchor_touched[(name,1)]=set()
+                    self.owner.update_perspective_panel_state()
+                else:
+                    self.owner.solve_perspective_axis(name)
+                    self.owner._persp_axis_complete[name]=True
+                    self.owner.perspective_step=1
+                    self.owner.solve_perspective_axis(name)
+                    self.owner.update_perspective_panel_state()
+                self.owner.save_perspective(); self.owner.refresh()
+            self.drag_item=None; return
         if self.drag_item and self.drag_item[0] in ('perspective_vp','perspective_anchor','eye_level'):
             if self.drag_item[0]=='perspective_anchor':
                 name,li,ei=self.drag_item[1],self.drag_item[2],self.drag_item[3]
@@ -596,9 +697,7 @@ class ImageCanvas(QWidget):
                 touched=self.owner._persp_anchor_touched.setdefault(key,set())
                 touched.add(ei)
                 if li==0 and touched=={0,1}:
-                    # First line is confirmed by two user-adjusted anchors.
-                    # Now create and reveal line 2 automatically.
-                    self.owner.prepare_second_perspective_line(name)
+                    self.owner.begin_second_perspective_line(name)
                     self.owner.perspective_step=1
                     self.owner._persp_anchor_touched[(name,1)]=set()
                     self.owner.update_perspective_panel_state()
@@ -615,12 +714,12 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.8.1 Perspective State Fix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.9.1 Two-Stroke Pencil Calibration'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
         self.active_perspective_axis='vp1'; self.perspective_step=0
-        self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}
+        self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}; self.show_perspective_grid_default=True
         self.perspective_lines=self.default_perspective_lines()
         self.helper_v=[]; self.helper_h=[]; self.helper_free=[]; self.selected_helper=None
         self.selected_comp_guide=None
@@ -640,7 +739,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.vp_ray_colors={'vp1':'#00d4ff','vp2':'#ff4fa3','vp3':'#7ee787'}
         self.vp_ray_counts={'vp1':12,'vp2':12,'vp3':12}
         self.vp_ray_visible={'vp1':True,'vp2':True,'vp3':True}
-        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.8.1 — VP確定フロー・放射線描画修正版')
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.9 — 鉛筆式パース入力 + 画像内パースグリッド')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
@@ -686,16 +785,18 @@ class MovieShotAnalyzer(QMainWindow):
         tab=QWidget(); lay=QVBoxLayout(tab); lay.setContentsMargins(10,10,10,10); lay.setSpacing(8)
         self.show_perspective=QCheckBox('パースを表示'); self.show_perspective.setChecked(True); self.show_perspective.toggled.connect(self.refresh); lay.addWidget(self.show_perspective)
         self.show_perspective_handles=QCheckBox('操作中の白○を表示'); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_handles)
+        self.perspective_pencil=QCheckBox('鉛筆式入力（ドラッグで基準線）'); self.perspective_pencil.setChecked(True); lay.addWidget(self.perspective_pencil)
+        self.show_perspective_grid=QCheckBox('画像内パースグリッドを表示'); self.show_perspective_grid.setChecked(True); self.show_perspective_grid.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_grid)
         self.section(lay,'消失点')
         axisrow=QHBoxLayout(); self.axis_buttons={}
         tips={
-            'vp1':'VP1を設定。最初の基準線は白○2点をドラッグして合わせます。2点とも動かすと自動で2本目へ進みます。',
+            'vp1':'VP1を設定。1本目をドラッグで引き、続けて2本目もドラッグで引くとVPを確定します。',
             'vp2':'VP2を設定。別方向の平行エッジ2本から消失点を求めます。',
             'vp3':'VP3を設定。主に垂直方向の収束を2本の線から求めます。'}
         for key,label in [('vp1','VP1'),('vp2','VP2'),('vp3','VP3')]:
             b=QPushButton(label); b.setCheckable(True); b.setToolTip(tips[key]); b.clicked.connect(lambda checked,k=key:self.set_perspective_axis(k)); axisrow.addWidget(b); self.axis_buttons[key]=b
         lay.addLayout(axisrow)
-        self.persp_step_label=QLabel('1本目：白○2点を合わせる'); self.persp_step_label.setObjectName('fileLabel'); lay.addWidget(self.persp_step_label)
+        self.persp_step_label=QLabel('1本目：画像上をドラッグして引く'); self.persp_step_label.setObjectName('fileLabel'); lay.addWidget(self.persp_step_label)
         self.persp_label=QLabel('VP1 / VP2 / VP3 / Horizon'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); lay.addWidget(self.persp_label)
         row=QHBoxLayout(); resetaxis=QPushButton('選択VPをリセット'); resetaxis.clicked.connect(self.reset_active_perspective_axis); resetall=QPushButton('全てリセット'); resetall.clicked.connect(self.reset_perspective); row.addWidget(resetaxis); row.addWidget(resetall); lay.addLayout(row)
         self.section(lay,'放射線（VPからのガイドライン）')
@@ -782,22 +883,17 @@ class MovieShotAnalyzer(QMainWindow):
             self._persp_anchor_touched[(name,0)]=set()
             self._persp_anchor_touched.pop((name,1),None)
         self.update_perspective_panel_state(); self.refresh()
-    def prepare_second_perspective_line(self,name):
-        """Create line 2 as a translated copy of line 1, then let the user place it."""
-        lines=self.perspective_lines[name]
-        (x1,y1),(x2,y2)=lines[0]
-        dx=x2-x1; dy=y2-y1; ln=max(1e-6,math.hypot(dx,dy))
-        px=-dy/ln; py=dx/ln; amount=0.18
-        choices=[]
-        for sign in (1,-1):
-            ox=px*amount*sign; oy=py*amount*sign
-            a=(x1+ox,y1+oy); b=(x2+ox,y2+oy)
-            penalty=sum(max(0,-v)+max(0,v-1) for v in (a[0],a[1],b[0],b[1]))
-            choices.append((penalty,a,b))
-        _,a,b=min(choices,key=lambda z:z[0])
-        lines[1]=[a,b]
+    def begin_second_perspective_line(self,name):
+        """Arm line 2 for a fresh pencil stroke instead of auto-placing anchors."""
+        lines=[[tuple(pt) for pt in line] for line in self.perspective_lines[name]]
+        # Keep it degenerate and hidden until the next drag starts.
+        lines[1]=[(0.5,0.5),(0.5,0.5)]
         self.perspective_lines[name]=lines
         self._persp_axis_complete[name]=False
+
+    # Backward-compatible alias for any older saved/action path.
+    def prepare_second_perspective_line(self,name):
+        self.begin_second_perspective_line(name)
 
     def set_perspective_step(self,step):
         self.perspective_step=0 if step<=0 else 1; self.update_perspective_panel_state(); self.refresh()
@@ -814,9 +910,9 @@ class MovieShotAnalyzer(QMainWindow):
             if self._persp_axis_complete.get(self.active_perspective_axis,False):
                 self.persp_step_label.setText(f'{lab} 完了：白○で微調整')
             elif self.perspective_step==0:
-                self.persp_step_label.setText(f'{lab} 1本目：白○2点をエッジに合わせる')
+                self.persp_step_label.setText(f'{lab} 1本目：ドラッグして基準線を引く')
             else:
-                self.persp_step_label.setText(f'{lab} 2本目：自動表示された白○2点を別の平行エッジへ')
+                self.persp_step_label.setText(f'{lab} 2本目：ドラッグして別の平行エッジに基準線を引く')
     def reset_active_perspective_axis(self):
         defaults=self.default_perspective_lines(); name=self.active_perspective_axis
         import copy; self.perspective_lines[name]=copy.deepcopy(defaults[name]); self._persp_axis_complete[name]=False; self._persp_anchor_touched[(name,0)]=set(); self._persp_anchor_touched.pop((name,1),None); self.perspective_step=0; self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
@@ -921,7 +1017,7 @@ class MovieShotAnalyzer(QMainWindow):
     def reset_perspective(self):
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
         self.active_perspective_axis='vp1'; self.perspective_step=0
-        self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}
+        self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}; self.show_perspective_grid_default=True
         self.perspective_lines=self.default_perspective_lines()
         self.perspective_step=0; self.update_perspective_panel_state(); self.update_perspective_labels(); self.save_perspective(); self.refresh()
     def update_perspective_labels(self):
