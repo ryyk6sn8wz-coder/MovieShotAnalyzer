@@ -1,14 +1,10 @@
-# Movie Shot Analyzer V5.8
+# Movie Shot Analyzer V5.8.1
 
-V5.7.2をベースにパース表示を更新。
+VP confirmation / ray rendering fix.
 
-- VP1 / VP2 / VP3 が確定するたびに、そのVPから放射状ガイドラインを表示
-- VP1 / VP2 / VP3 それぞれ放射線の表示ON/OFF
-- 各VPごとに放射線本数を 2〜48 本で個別調整
-- VP1 / VP2 / VP3 の色を個別変更可能
-- 色変更はVPマーカー、基準線、延長線、放射線に共通反映
-- 2本目の2アンカー確定直後に再描画し、確定線が即座に細線へ戻るよう修正
-- パースアンカーは小型サイズを維持
-- 基本ガイド交点の塗りつぶし○、追加構図、トンネル8アンカー、補助線は維持
-
-GitHubへ6ファイルを上書きして、既存のWindows Actions workflowを実行してください。
+- VP1 / VP2 / VP3 now share the same two-line confirmation flow.
+- After both anchors of line 2 are positioned, both calibration lines immediately become thin confirmed lines.
+- Rays appear immediately after each VP is confirmed.
+- VP1 / VP2 / VP3 each retain independent ray ON/OFF, count (2-48), and color.
+- VP completion state is retained when moving between loaded images.
+- Existing composition guides, basic-guide intersection dots, tunnel 8 handles, helper lines, frame lock, and wheel zoom remain intact.

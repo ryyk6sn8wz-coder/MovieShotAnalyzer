@@ -346,7 +346,7 @@ class ImageCanvas(QWidget):
             if not self.owner._persp_axis_complete.get(key,False) or not self.owner.vp_ray_visible.get(key,True):
                 continue
             vp=self._image_norm_to_point(*xy); count=max(2,int(self.owner.vp_ray_counts.get(key,12)))
-            rc=QColor(color); rc.setAlpha(115); rp=QPen(rc); rp.setWidthF(.9); p.setPen(rp)
+            rc=QColor(color); rc.setAlpha(155); rp=QPen(rc); rp.setWidthF(1.0); p.setPen(rp)
             radius=20000.0
             # 180 degrees is sufficient because each guide is drawn as a full line through the VP.
             for i in range(count):
@@ -604,8 +604,10 @@ class ImageCanvas(QWidget):
                     self.owner.update_perspective_panel_state()
                 elif li==1:
                     self.owner.solve_perspective_axis(name)
-                    if touched=={0,1}:
+                    if len(touched) >= 2:
                         self.owner._persp_axis_complete[name]=True
+                        self.owner.perspective_step=1
+                        self.owner.solve_perspective_axis(name)
                         self.owner.update_perspective_panel_state()
             self.owner.save_perspective()
             self.owner.refresh()
@@ -613,7 +615,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.8 Perspective Rays'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.8.1 Perspective State Fix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
@@ -638,7 +640,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.vp_ray_colors={'vp1':'#00d4ff','vp2':'#ff4fa3','vp3':'#7ee787'}
         self.vp_ray_counts={'vp1':12,'vp2':12,'vp3':12}
         self.vp_ray_visible={'vp1':True,'vp2':True,'vp3':True}
-        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.8 — VP1/VP2/VP3 放射線・本数・色設定')
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.8.1 — VP確定フロー・放射線描画修正版')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
@@ -851,8 +853,10 @@ class MovieShotAnalyzer(QMainWindow):
             self.vp1=tuple(pd.get('vp1',(-0.30,0.50))); self.vp2=tuple(pd.get('vp2',(1.30,0.50))); self.vp3=tuple(pd.get('vp3',(0.50,-0.65))); self.eye_level_y=float(pd.get('eye',0.50))
             import copy
             self.perspective_lines=copy.deepcopy(pd.get('lines',self.default_perspective_lines()))
-            self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}
-            self.active_perspective_axis='vp1'; self.perspective_step=0
+            saved_complete=pd.get('complete',{})
+            self._persp_axis_complete={k:bool(saved_complete.get(k,False)) for k in ('vp1','vp2','vp3')}
+            self._persp_anchor_touched={}
+            self.active_perspective_axis='vp1'; self.perspective_step=1 if self._persp_axis_complete.get('vp1',False) else 0
             self.update_perspective_panel_state(); self.update_perspective_labels()
             self.update_display(); self.file_label.setText(f'{p.name}\n{self.current_index+1} / {len(self.paths)}\n{self.original.width} × {self.original.height} px'); self.statusBar().showMessage(str(p))
         except Exception as ex:self.file_label.setText(f'読み込み失敗: {p.name}\n{ex}')
@@ -913,7 +917,7 @@ class MovieShotAnalyzer(QMainWindow):
     def save_perspective(self):
         if 0<=self.current_index<len(self.paths):
             import copy
-            self.perspective_by_image[str(self.paths[self.current_index])]={'vp1':tuple(self.vp1),'vp2':tuple(self.vp2),'vp3':tuple(self.vp3),'eye':float(self.eye_level_y),'lines':copy.deepcopy(self.perspective_lines)}
+            self.perspective_by_image[str(self.paths[self.current_index])]={'vp1':tuple(self.vp1),'vp2':tuple(self.vp2),'vp3':tuple(self.vp3),'eye':float(self.eye_level_y),'lines':copy.deepcopy(self.perspective_lines),'complete':dict(self._persp_axis_complete)}
     def reset_perspective(self):
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
         self.active_perspective_axis='vp1'; self.perspective_step=0
