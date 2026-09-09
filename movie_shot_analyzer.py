@@ -226,7 +226,7 @@ class ImageCanvas(QWidget):
                     # de-duplicate near-identical crossings
                     if any((pt.x()-q.x())**2+(pt.y()-q.y())**2 < 16 for q in pts): continue
                     pts.append(pt)
-            fill=QColor(self.owner.point_color); fill.setAlpha(round(255*self.owner.point_alpha.value()/100))
+            fill=QColor(self.owner.point_color); fill.setAlpha(round(255*self.owner.guide_alpha.value()/100))
             p.setBrush(fill); p.setPen(Qt.PenStyle.NoPen)
             r=self.owner.point_size.val()/2
             for pt in pts[:120]: p.drawEllipse(QRectF(pt.x()-r,pt.y()-r,r*2,r*2))
@@ -764,7 +764,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.14 Learning Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.15 Perspective Candidates'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -774,6 +774,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.auto_detected_lines=[]
         self.auto_analysis_quality=None
         self.auto_analysis_note=''
+        self.auto_candidates=[]; self.auto_candidate_index=-1
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
         self.active_perspective_axis='vp1'; self.perspective_step=0
         self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}; self.show_perspective_grid_default=True
@@ -796,14 +797,14 @@ class MovieShotAnalyzer(QMainWindow):
         self.vp_ray_colors={'vp1':'#00d4ff','vp2':'#ff4fa3','vp3':'#7ee787'}
         self.vp_ray_counts={'vp1':12,'vp2':12,'vp3':12}
         self.vp_ray_visible={'vp1':True,'vp2':True,'vp3':True}
-        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.14 — 手動パース学習 + 自動修正学習 + 個別透明度')
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.15 — 建築優先候補A/B/C + 安全なVP3 + UI修正')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
         root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.14 / 手動パース学習・建築優先＋レンズ'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.15 / 建築優先・候補A/B/C＋学習＋レンズ'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -832,14 +833,16 @@ class MovieShotAnalyzer(QMainWindow):
         return b
 
     def _build_right_tabs(self,outer):
-        panel=QWidget(); panel.setObjectName('rightPanel'); panel.setMinimumWidth(320); panel.setMaximumWidth(390)
+        panel=QWidget(); panel.setObjectName('rightPanel'); panel.setMinimumWidth(350); panel.setMaximumWidth(440)
         r=QVBoxLayout(panel); r.setContentsMargins(8,8,8,8); r.setSpacing(6)
         self.right_tabs=QTabWidget(); self.right_tabs.setObjectName('rightTabs'); r.addWidget(self.right_tabs)
         self._build_perspective_tab(); self._build_composition_tab(); self._build_analysis_tab()
         outer.addWidget(panel,0)
 
     def _build_perspective_tab(self):
-        tab=QWidget(); lay=QVBoxLayout(tab); lay.setContentsMargins(10,10,10,10); lay.setSpacing(8)
+        tab=QWidget(); outer=QVBoxLayout(tab); outer.setContentsMargins(0,0,0,0)
+        sc=QScrollArea(); sc.setWidgetResizable(True); sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body=QWidget(); lay=QVBoxLayout(body); lay.setContentsMargins(10,10,10,10); lay.setSpacing(9)
         self.show_perspective=QCheckBox('パースを表示'); self.show_perspective.setChecked(True); self.show_perspective.toggled.connect(self.refresh); lay.addWidget(self.show_perspective)
         self.show_perspective_handles=QCheckBox('操作中の白○を表示'); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_handles)
         self.perspective_pencil=QCheckBox('鉛筆式入力（ドラッグで基準線）'); self.perspective_pencil.setChecked(True); lay.addWidget(self.perspective_pencil)
@@ -847,6 +850,10 @@ class MovieShotAnalyzer(QMainWindow):
         auto_row=QHBoxLayout(); self.auto_perspective_btn=QPushButton('自動解析'); self.auto_perspective_btn.setToolTip('画像内の直線を検出し、VP1/VP2/VP3候補・アイレベル・パースライン・レンズを自動推定します。'); self.auto_perspective_btn.clicked.connect(self.auto_analyze_perspective); auto_row.addWidget(self.auto_perspective_btn)
         self.show_auto_detected_lines=QCheckBox('検出線'); self.show_auto_detected_lines.setToolTip('自動解析が根拠に使った画像内の直線を薄く表示します。'); self.show_auto_detected_lines.setChecked(False); self.show_auto_detected_lines.toggled.connect(self.refresh); auto_row.addWidget(self.show_auto_detected_lines); lay.addLayout(auto_row)
         self.auto_analysis_label=QLabel('自動解析：未実行'); self.auto_analysis_label.setObjectName('note'); self.auto_analysis_label.setWordWrap(True); lay.addWidget(self.auto_analysis_label)
+        cand=QHBoxLayout(); cand.addWidget(QLabel('候補')); self.auto_candidate_buttons=[]
+        for i,name in enumerate(('A','B','C')):
+            cb=QPushButton(name); cb.setCheckable(True); cb.setEnabled(False); cb.clicked.connect(lambda checked=False,n=i:self.apply_auto_candidate(n)); cand.addWidget(cb); self.auto_candidate_buttons.append(cb)
+        lay.addLayout(cand)
         self.section(lay,'消失点')
         axisrow=QHBoxLayout(); self.axis_buttons={}
         tips={
@@ -882,7 +889,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.section(lay,'表示')
         row=QHBoxLayout(); row.addWidget(QLabel('作業領域')); self.workspace_scale=QSlider(Qt.Orientation.Horizontal); self.workspace_scale.setRange(100,400); self.workspace_scale.setValue(100); self.workspace_scale.valueChanged.connect(self.refresh); row.addWidget(self.workspace_scale,1); self.workspace_label=QLabel('100%'); self.workspace_label.setFixedWidth(46); self.workspace_scale.valueChanged.connect(lambda v:self.workspace_label.setText(f'{v}%')); row.addWidget(self.workspace_label); lay.addLayout(row)
         row=QHBoxLayout(); row.addWidget(QLabel('ホイールズーム')); self.zoom_label=QLabel('100%'); row.addWidget(self.zoom_label); zreset=QPushButton('100%'); zreset.clicked.connect(self.reset_zoom); row.addWidget(zreset); lay.addLayout(row)
-        lay.addStretch(1); self.right_tabs.addTab(tab,'パース・レンズ')
+        lay.addStretch(1); sc.setWidget(body); outer.addWidget(sc); self.right_tabs.addTab(tab,'パース・レンズ')
 
     def _build_composition_tab(self):
         tab=QWidget(); outer=QVBoxLayout(tab); outer.setContentsMargins(0,0,0,0)
@@ -913,7 +920,7 @@ class MovieShotAnalyzer(QMainWindow):
         grid.addWidget(QLabel('構図ガイド透明度'),1,0); self.guide_alpha=QSlider(Qt.Orientation.Horizontal); self.guide_alpha.setRange(0,100); self.guide_alpha.setValue(90); self.guide_alpha.valueChanged.connect(self.refresh); grid.addWidget(self.guide_alpha,1,1); self.guide_alpha_label=QLabel('90%'); self.guide_alpha_label.setFixedWidth(38); self.guide_alpha.valueChanged.connect(lambda v:self.guide_alpha_label.setText(f'{v}%')); grid.addWidget(self.guide_alpha_label,1,2); c.addLayout(grid)
         self.show_points=QCheckBox('基本ガイドの交点○を表示'); self.show_points.setChecked(True); self.show_points.toggled.connect(self.refresh); c.addWidget(self.show_points)
         grid=QGridLayout(); grid.addWidget(QLabel('○サイズ'),0,0); self.point_size=StepControl(2.0,30.0,8.0,0.5); self.point_size.value.valueChanged.connect(self.refresh); grid.addWidget(self.point_size,0,1); c.addLayout(grid)
-        row=QHBoxLayout(); pc=QPushButton('○の色'); pc.clicked.connect(self.choose_point_color); row.addWidget(pc); row.addWidget(QLabel('○透明度')); self.point_alpha=QSlider(Qt.Orientation.Horizontal); self.point_alpha.setRange(0,100); self.point_alpha.setValue(100); self.point_alpha.valueChanged.connect(self.refresh); row.addWidget(self.point_alpha,1); self.point_alpha_label=QLabel('100%'); self.point_alpha_label.setFixedWidth(42); self.point_alpha.valueChanged.connect(lambda v:self.point_alpha_label.setText(f'{v}%')); row.addWidget(self.point_alpha_label); c.addLayout(row)
+        row=QHBoxLayout(); pc=QPushButton('○の色'); pc.clicked.connect(self.choose_point_color); row.addWidget(pc); row.addStretch(1); c.addLayout(row)
         c.addStretch(1); sc.setWidget(body); outer.addWidget(sc); self.right_tabs.addTab(tab,'構図ガイド')
 
     def _build_analysis_tab(self):
@@ -1005,7 +1012,7 @@ class MovieShotAnalyzer(QMainWindow):
         import copy; self.perspective_lines[name]=copy.deepcopy(defaults[name]); self._persp_axis_complete[name]=False; self._persp_anchor_touched[(name,0)]=set(); self._persp_anchor_touched.pop((name,1),None); self.perspective_step=0; self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
 
     def _style(self):
-        self.setStyleSheet('''QMainWindow,QWidget{background:#20242b;color:#e8edf3}#controlsWidget{background:#20242b}#controlScroll{border:1px solid #343a43;background:#20242b}#appTitle{font-size:20px;font-weight:700}#panelTitle{font-size:18px;font-weight:700}#rightPanel{background:#1b1f26;border:1px solid #343a43}QTabWidget::pane{border:1px solid #343a43;background:#1b1f26}QTabBar::tab{background:#272d36;border:1px solid #3e4652;padding:9px 12px;margin-right:2px}QTabBar::tab:selected{background:#2d6cdf;color:white}QPushButton:checked{background:#2d6cdf;border-color:#68a0ff;color:white}#subtitle,#note{color:#aeb7c4}#section{font-size:14px;font-weight:700;color:#d9e2ec;margin-top:8px;border-top:1px solid #3b424d;padding-top:8px}#fileLabel{background:#171a20;border:1px solid #343a43;border-radius:5px;padding:8px}QPushButton{background:#303641;border:1px solid #48505d;border-radius:5px;padding:7px}QPushButton:hover{background:#3a424f}QPushButton:disabled{color:#69717c;background:#272b32}QCheckBox{padding:3px 1px}QDoubleSpinBox{background:#171a20;border:1px solid #48505d;padding:4px}QSlider::groove:horizontal{height:4px;background:#3b424d}QSlider::handle:horizontal{width:14px;margin:-5px 0;background:#8ab4f8;border-radius:7px}QScrollBar:vertical{background:#20242b;width:12px}QScrollBar::handle:vertical{background:#4a5260;min-height:28px;border-radius:5px}QStatusBar{background:#171a20;color:#aeb7c4}''')
+        self.setStyleSheet('''QMainWindow,QWidget{background:#20242b;color:#e8edf3}#controlsWidget{background:#20242b}#controlScroll{border:1px solid #343a43;background:#20242b}#appTitle{font-size:20px;font-weight:700}#panelTitle{font-size:18px;font-weight:700}#rightPanel{background:#1b1f26;border:1px solid #343a43}QTabWidget::pane{border:1px solid #343a43;background:#1b1f26}QTabBar::tab{background:#272d36;border:1px solid #3e4652;padding:9px 12px;margin-right:2px}QTabBar::tab:selected{background:#2d6cdf;color:white}QPushButton:checked{background:#2d6cdf;border-color:#68a0ff;color:white}#subtitle,#note{color:#aeb7c4}#section{font-size:14px;font-weight:700;color:#d9e2ec;margin-top:8px;border-top:1px solid #3b424d;padding-top:8px}#fileLabel{background:#171a20;border:1px solid #343a43;border-radius:5px;padding:8px}QPushButton{background:#303641;border:1px solid #48505d;border-radius:5px;padding:7px}QPushButton:hover{background:#3a424f}QPushButton:disabled{color:#69717c;background:#272b32}QLabel{min-height:20px;padding-top:2px;padding-bottom:2px}QCheckBox{min-height:22px;padding:3px 1px}QDoubleSpinBox{background:#171a20;border:1px solid #48505d;padding:4px}QSlider::groove:horizontal{height:4px;background:#3b424d}QSlider::handle:horizontal{width:14px;margin:-5px 0;background:#8ab4f8;border-radius:7px}QScrollBar:vertical{background:#20242b;width:12px}QScrollBar::handle:vertical{background:#4a5260;min-height:28px;border-radius:5px}QStatusBar{background:#171a20;color:#aeb7c4}''')
     def dragEnterEvent(self,e):
         if e.mimeData().hasUrls():e.acceptProposedAction()
     def dropEvent(self,e): self.open_paths([Path(u.toLocalFile()) for u in e.mimeData().urls() if u.isLocalFile()]); e.acceptProposedAction()
@@ -1285,70 +1292,112 @@ class MovieShotAnalyzer(QMainWindow):
         if hasattr(self,'learning_label'): self.learning_label.setText(f"学習データ：{self.learning_data['count']}件")
         self.statusBar().showMessage(f"パースを学習しました（{source} / 合計 {self.learning_data['count']}件）",3500)
 
+    def _pair_candidate_score(self,a,b,segments):
+        # Strong preference for two distinct, spatially distributed architectural directions.
+        vx1,vy1=a['vp']; vx2,vy2=b['vp']
+        sep=math.hypot(vx2-vx1,vy2-vy1)
+        if sep < 0.55: return -1e9
+        shared=len(set(a['support']) & set(b['support']))
+        if shared: return -1e9
+        score=a['score']+b['score']
+        score += min(0.8,sep*0.18)
+        # Horizon should not be absurdly steep for the common architectural 2-point case.
+        slope=abs(vy2-vy1)/max(abs(vx2-vx1),0.08)
+        if slope>0.65: score-=min(1.2,(slope-0.65)*1.1)
+        # Physical lens plausibility is a useful rejection test, not a hard truth.
+        cx,cy=.5,.5
+        f2=-((vx1-cx)*(vx2-cx)+(vy1-cy)*(vy2-cy))
+        if f2<=0: score-=1.0
+        else:
+            f=math.sqrt(f2); eq=36.0*f
+            if 14<=eq<=180: score+=0.45
+            elif 8<=eq<=250: score+=0.10
+            else: score-=0.5
+        return score
+
+    def _build_auto_candidates(self,segments,clusters):
+        # VP3 is excluded from horizontal pairing only when vertical evidence is genuinely strong.
+        vertical=[]; horizontal=[]
+        for c in clusters:
+            longv=sum(1 for i in c['support'] if segments[i]['length']>=0.10)
+            if c['vertical_dev']<=10.0 and len(c['support'])>=3 and longv>=2:
+                vertical.append(c)
+            else: horizontal.append(c)
+        if len(horizontal)<2: horizontal=clusters[:]
+        pairs=[]
+        for i in range(len(horizontal)):
+            for j in range(i+1,len(horizontal)):
+                sc=self._pair_candidate_score(horizontal[i],horizontal[j],segments)
+                if sc>-1e8: pairs.append((sc,horizontal[i],horizontal[j]))
+        pairs.sort(key=lambda x:x[0],reverse=True)
+        out=[]
+        for sc,a,b in pairs[:3]:
+            hs=sorted((a,b),key=lambda c:c['vp'][0])
+            item={'vp1':hs[0],'vp2':hs[1],'score':sc}
+            # Adopt VP3 only with strong evidence and only if it is not one of the horizontal families.
+            if vertical:
+                v=max(vertical,key=lambda c:c['score'])
+                if v not in hs and v['vertical_dev']<=8.0 and v['err']<=0.028:
+                    item['vp3']=v
+            out.append(item)
+        return out
+
+    def apply_auto_candidate(self,index):
+        if not (0<=index<len(self.auto_candidates)): return
+        cand=self.auto_candidates[index]; self.auto_candidate_index=index
+        segments=getattr(self,'_last_auto_segments',[]); self.auto_detected_lines=[]; qualities=[]
+        for key in ('vp1','vp2','vp3'):
+            c=cand.get(key)
+            if c is None:
+                self._persp_axis_complete[key]=False
+                continue
+            lines=self._choose_two_support_lines(c,segments)
+            if lines is None:
+                self._persp_axis_complete[key]=False; continue
+            self.perspective_lines[key]=lines
+            ip=infinite_line_intersection(lines[0][0],lines[0][1],lines[1][0],lines[1][1]) or c['vp']
+            ip=(max(-8.0,min(9.0,ip[0])),max(-7.0,min(8.0,ip[1])))
+            if key=='vp1': self.vp1=ip
+            elif key=='vp2': self.vp2=ip
+            else: self.vp3=ip
+            self._persp_axis_complete[key]=True
+            self._persp_anchor_touched[(key,0)]={0,1}; self._persp_anchor_touched[(key,1)]={0,1}
+            for gi in c['support']:
+                ss=segments[gi]; self.auto_detected_lines.append((key,tuple(ss['a']),tuple(ss['b'])))
+            long_support=sum(1 for gi in c['support'] if segments[gi]['length']>=0.12)
+            q=15.0+min(30.0,long_support*6.0)+min(18.0,c['score']*14.0)-c['err']*360.0
+            qualities.append(max(5.0,min(82.0,q)))
+        if self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2'):
+            x1,y1=self.vp1; x2,y2=self.vp2
+            self.eye_level_y=(y1+y2)/2 if abs(x2-x1)<1e-9 else y1+(0.5-x1)*(y2-y1)/(x2-x1)
+        self.perspective_source='auto'; self.auto_analysis_quality=sum(qualities)/len(qualities) if qualities else 0.0
+        axes=sum(1 for k in ('vp1','vp2','vp3') if self._persp_axis_complete.get(k))
+        self.auto_analysis_note=f'候補 {chr(65+index)} / {axes}方向 / 建築長線優先 / 採用線 {len(self.auto_detected_lines)}本'
+        self.auto_analysis_label.setText(f'自動解析：信頼度 {self.auto_analysis_quality:.0f}% / {self.auto_analysis_note}')
+        for i,b in enumerate(getattr(self,'auto_candidate_buttons',[])):
+            b.blockSignals(True); b.setChecked(i==index); b.blockSignals(False)
+        self.active_perspective_axis='vp3' if self._persp_axis_complete.get('vp3') else 'vp2'; self.perspective_step=1
+        self.update_perspective_panel_state(); self.update_perspective_labels(); self.save_perspective(); self.refresh()
+
     def auto_analyze_perspective(self):
-        """Automatic VP proposal. Results remain editable with the existing pencil/anchor UI."""
+        """Generate A/B/C architectural VP candidates; never force a weak VP3."""
         if self.original is None:
             self.statusBar().showMessage('先に画像を開いてください。',4000); return
         if cv2 is None or np is None:
             self.statusBar().showMessage('自動解析には OpenCV / NumPy が必要です。requirements.txt から再ビルドしてください。',7000); return
-        self.statusBar().showMessage('自動パース解析中…')
+        self.statusBar().showMessage('自動パース候補を解析中…')
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            segments=self._detect_segments_cv()
-            clusters=self._find_vp_clusters(segments,3)
-            if len(clusters)<2:
-                self.auto_detected_lines=[]; self.auto_analysis_quality=0.0; self.auto_analysis_note='十分な直線を検出できませんでした'
-                self.auto_analysis_label.setText('自動解析：失敗 / 直線の多い背景で再試行してください')
-                self.statusBar().showMessage('自動解析：VP候補を2方向以上検出できませんでした。手動入力を使用してください。',7000); self.refresh(); return
-            # Pick a vertical family only when its supporting edges are convincingly vertical.
-            clusters=sorted(clusters,key=lambda c:c['score'],reverse=True)
-            vertical=None
-            vertical_candidates=sorted(clusters,key=lambda c:c['vertical_dev'])
-            if vertical_candidates and vertical_candidates[0]['vertical_dev']<24.0:
-                vertical=vertical_candidates[0]
-            horizontal=[c for c in clusters if c is not vertical]
-            if len(horizontal)<2:
-                horizontal=clusters[:2]; vertical=clusters[2] if len(clusters)>2 else None
-            horizontal=sorted(horizontal[:2],key=lambda c:c['vp'][0])
-            assigned={'vp1':horizontal[0],'vp2':horizontal[1]}
-            if vertical is not None and vertical not in horizontal: assigned['vp3']=vertical
-            self.auto_detected_lines=[]
-            qualities=[]
-            for key in ('vp1','vp2','vp3'):
-                c=assigned.get(key)
-                if c is None:
-                    self._persp_axis_complete[key]=False; continue
-                lines=self._choose_two_support_lines(c,segments)
-                if lines is None:
-                    self._persp_axis_complete[key]=False; continue
-                self.perspective_lines[key]=lines
-                ip=infinite_line_intersection(lines[0][0],lines[0][1],lines[1][0],lines[1][1]) or c['vp']
-                ip=(max(-6.0,min(7.0,ip[0])),max(-5.0,min(6.0,ip[1])))
-                if key=='vp1': self.vp1=ip
-                elif key=='vp2': self.vp2=ip
-                else: self.vp3=ip
-                self._persp_axis_complete[key]=True
-                self._persp_anchor_touched[(key,0)]={0,1}; self._persp_anchor_touched[(key,1)]={0,1}
-                for gi in c['support']:
-                    ss=segments[gi]; self.auto_detected_lines.append((key,tuple(ss['a']),tuple(ss['b'])))
-                # Map score/support/error into a deliberately conservative percentage.
-                
-                # Conservative confidence: support count alone must never create 90%+ certainty.
-                lens=[segments[i]['length'] for i in c['support']]
-                long_support=sum(1 for x in lens if x>=0.12)
-                q=18.0 + min(28.0,long_support*7.0) + min(24.0,c['score']*20.0) - c['err']*320.0
-                q=max(5.0,min(88.0,q)); qualities.append(q)
-            if self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2'):
-                x1,y1=self.vp1; x2,y2=self.vp2
-                self.eye_level_y=(y1+y2)/2.0 if abs(x2-x1)<1e-9 else y1+(0.5-x1)*(y2-y1)/(x2-x1)
-            self.active_perspective_axis='vp3' if self._persp_axis_complete.get('vp3') else 'vp2'; self.perspective_step=1
-            self.perspective_source='auto'
-            self.auto_analysis_quality=sum(qualities)/len(qualities) if qualities else 0.0
-            axes=sum(1 for k in ('vp1','vp2','vp3') if self._persp_axis_complete.get(k))
-            self.auto_analysis_note=f'{axes}方向 / 建築・長線優先 / 検出線 {len(self.auto_detected_lines)}本'
-            self.auto_analysis_label.setText(f'自動解析：信頼度 {self.auto_analysis_quality:.0f}% / {self.auto_analysis_note}')
-            self.update_perspective_panel_state(); self.update_perspective_labels(); self.save_perspective(); self.refresh()
-            self.statusBar().showMessage('自動解析完了。放射線と画像内グリッドを生成しました。必要なら白○または鉛筆入力で修正してください。',7000)
+            segments=self._detect_segments_cv(); self._last_auto_segments=segments
+            clusters=self._find_vp_clusters(segments,5)
+            self.auto_candidates=self._build_auto_candidates(segments,clusters)
+            for i,b in enumerate(getattr(self,'auto_candidate_buttons',[])): b.setEnabled(i<len(self.auto_candidates))
+            if not self.auto_candidates:
+                self.auto_detected_lines=[]; self.auto_analysis_quality=0.0; self.auto_analysis_note='有効な建築パース候補なし'
+                self.auto_analysis_label.setText('自動解析：候補なし / 手動入力を使用してください')
+                self.statusBar().showMessage('自動解析：信頼できる2方向を作れませんでした。無理にVPを生成しません。',7000); self.refresh(); return
+            self.apply_auto_candidate(0)
+            self.statusBar().showMessage(f'自動解析完了：{len(self.auto_candidates)}候補。A/B/Cを切り替えて最も合うものを選べます。',7000)
         except Exception as ex:
             self.statusBar().showMessage(f'自動解析でエラー: {ex}',9000)
         finally:
