@@ -9,13 +9,17 @@ try:
 except Exception:
     cv2=None
     np=None
-# V5.20 perspective-family tuning constants
+# V5.21 perspective-family tuning constants
 AUTO_DEFAULT_RAYS = 8
 VP3_VERTICAL_PARALLEL_DEG = 3.5
 VP3_MIN_VERTICAL_SUPPORT = 5
 VP3_MIN_VERTICAL_SPREAD = 0.40
 INSIDE_VP_LOCALITY_PENALTY = 0.55
 FAMILY_MIN_ANGLE_SEPARATION_DEG = 12.0
+PERSON_REGION_WEIGHT = 0.18
+STRUCTURAL_LONG_LINE_BONUS = 1.55
+LOW_CONFIDENCE_VP_THRESHOLD = 0.30
+EYE_LEVEL_FORCE_HORIZONTAL = True
 
 from PySide6.QtCore import QRectF, Qt, QPointF, QEvent
 from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPen, QPixmap, QPolygonF
@@ -384,6 +388,66 @@ class ImageCanvas(QWidget):
         r=self.image_rect
         if r.width()<=1 or r.height()<=1:return (0.0,0.0)
         return ((pos.x()-r.left())/r.width(), (pos.y()-r.top())/r.height())
+
+    def _v521_structural_segment_weight(self, seg, frame_w, frame_h, person_boxes=None):
+        """Prefer long, spatially useful structural lines; heavily suppress lines centered in person regions."""
+        x1, y1, x2, y2 = seg[:4]
+        L = math.hypot(x2-x1, y2-y1)
+        diag = max(1.0, math.hypot(frame_w, frame_h))
+        norm_len = L / diag
+        w = 0.35 + min(1.8, norm_len * 4.0)
+        if norm_len >= 0.22:
+            w *= STRUCTURAL_LONG_LINE_BONUS
+        mx, my = (x1+x2)*0.5, (y1+y2)*0.5
+        if person_boxes:
+            for bx, by, bw, bh in person_boxes:
+                if bx <= mx <= bx+bw and by <= my <= by+bh:
+                    w *= PERSON_REGION_WEIGHT
+                    break
+        # Short lines around the central portrait/action area are common false positives.
+        if norm_len < 0.12 and 0.20*frame_w <= mx <= 0.80*frame_w and 0.12*frame_h <= my <= 0.92*frame_h:
+            w *= 0.35
+        return max(0.01, w)
+
+    def _v521_horizontal_eye_level_y(self):
+        """Return a display-only horizontal eye-level height from the most reliable solved VPs."""
+        vals = []
+        for axis in (1, 2):
+            try:
+                vp = self.perspective_vps.get(axis)
+                if vp is not None:
+                    vals.append(float(vp[1]))
+            except Exception:
+                pass
+        if vals:
+            return sum(vals) / len(vals)
+        return 0.5
+
+    def _v521_learning_record(self, source="manual"):
+        """Capture the user's actual calibration lines as teacher data, not only final VP coordinates."""
+        rec = {"version": 2, "source": source, "families": []}
+        try:
+            lines_obj = self.perspective_lines
+        except Exception:
+            lines_obj = {}
+        for axis in (1, 2, 3):
+            fam = []
+            try:
+                axis_lines = lines_obj.get(axis, [])
+            except Exception:
+                axis_lines = []
+            for ln in axis_lines:
+                try:
+                    if len(ln) >= 2 and hasattr(ln[0], "x"):
+                        p1, p2 = ln[0], ln[1]
+                        fam.append([float(p1.x()), float(p1.y()), float(p2.x()), float(p2.y())])
+                    elif len(ln) >= 4:
+                        fam.append([float(ln[0]), float(ln[1]), float(ln[2]), float(ln[3])])
+                except Exception:
+                    pass
+            if fam:
+                rec["families"].append({"axis": axis, "lines": fam})
+        return rec
 
     def _v520_segment_angle_deg(self, seg):
         x1, y1, x2, y2 = seg[:4]
@@ -886,7 +950,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.20 Conservative Architecture Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.21 Conservative Architecture Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -929,7 +993,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.20 / 方向ファミリー解析・VP3抑制・学習線群優先'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.21 / 人物抑制・構造線優先・水平EYE LEVEL・線ファミリー学習'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1613,7 +1677,7 @@ class MovieShotAnalyzer(QMainWindow):
                 pairs.append((sc,a,b,d))
         pairs.sort(key=lambda x:x[0],reverse=True)
         out=[]; used_sigs=[]
-        # V5.20 deliberately refuses weak 2-direction solutions instead of drawing plausible-looking nonsense.
+        # V5.21 deliberately refuses weak 2-direction solutions instead of drawing plausible-looking nonsense.
         pair_floor=1.18 if relaxed else 1.48
         for sc,a,b,d in pairs:
             if sc < pair_floor:
@@ -1697,6 +1761,7 @@ class MovieShotAnalyzer(QMainWindow):
         return {'length':float(length),'border':float(max(0,min(.5,border))),'vertical':float(vertical),'angle':float(ang)}
 
     def learn_current_perspective(self,source='manual',axes=None):
+        v521_family_record = self._v521_learning_record("manual")
         if not self.learning_enabled or self.original is None: return
         axes=axes or [k for k in ('vp1','vp2','vp3') if self._persp_axis_complete.get(k)]
         learned=[]
@@ -1820,7 +1885,7 @@ class MovieShotAnalyzer(QMainWindow):
         if cand.get('single'):
             self.auto_analysis_quality=min(self.auto_analysis_quality,58.0)
         state='1方向のみ・2方向は判定保留' if cand.get('single') else f'{axes}方向'
-        self.auto_analysis_note=f'候補 {chr(65+index)} / {state} / 建築方向ファミリー優先 / 採用線群 {len(self.auto_detected_lines)}本'
+        self.auto_analysis_note=f'候補 {chr(65+index)} / {state} / 人物抑制＋構造線ファミリー優先 / 採用線群 {len(self.auto_detected_lines)}本'
         self.auto_analysis_label.setText(f'自動解析：信頼度 {self.auto_analysis_quality:.0f}% / {self.auto_analysis_note}')
         for i,b in enumerate(getattr(self,'auto_candidate_buttons',[])):
             b.blockSignals(True); b.setChecked(i==index); b.blockSignals(False)
@@ -1828,7 +1893,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.update_perspective_panel_state(); self.update_perspective_labels(); self.save_perspective(); self.refresh()
 
     def auto_analyze_perspective(self):
-        """V5.20: conservative direction clustering with reject/one-direction states."""
+        """V5.21: conservative direction clustering with reject/one-direction states."""
         if self.original is None:
             self.statusBar().showMessage('先に画像を開いてください。',4000); return
         if cv2 is None or np is None:
@@ -1843,7 +1908,7 @@ class MovieShotAnalyzer(QMainWindow):
                 relaxed=self._build_direction_cluster_candidates(segments,True)
                 if len(relaxed)>len(self.auto_candidates):
                     self.auto_candidates=relaxed; relaxed_used=True
-            # V5.20 intentionally does not fall back to the old free-intersection solver.
+            # V5.21 intentionally does not fall back to the old free-intersection solver.
             # If direction families are weak, report uncertainty instead of fabricating a VP pair.
             for i,b in enumerate(getattr(self,'auto_candidate_buttons',[])):
                 b.setEnabled(i<len(self.auto_candidates))
@@ -1854,7 +1919,7 @@ class MovieShotAnalyzer(QMainWindow):
             if relaxed_used:
                 self.statusBar().showMessage('方向クラスタが不足したため緩和条件も使用しました。',4500)
             self.apply_auto_candidate(0)
-            # Make the method visible in the UI so tests can distinguish V5.20 behaviour.
+            # Make the method visible in the UI so tests can distinguish V5.21 behaviour.
             sig=self.auto_candidates[0].get('direction_signature')
             if sig:
                 self.auto_analysis_note += ' / 方向 ' + '-'.join(str(int(x))+'°' for x in sig)
@@ -2073,7 +2138,7 @@ class MovieShotAnalyzer(QMainWindow):
 
 
     def _v520_postprocess_auto_candidates(self, candidates, segments, frame_w, frame_h):
-        """V5.20: prefer distinct structural direction families; suppress weak VP3; keep uncertain shots conservative."""
+        """V5.21: prefer distinct structural direction families; suppress weak VP3; keep uncertain shots conservative."""
         try:
             families = self._v520_family_cluster(segments)
         except Exception:
