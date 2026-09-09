@@ -1,29 +1,31 @@
-# Movie Shot Analyzer V5.5
+# Movie Shot Analyzer V5.7
 
-V5.5 adds a VanishPoint-style perspective calibration workflow.
+## 主な変更
+- 右側に常時表示の「パース定規」専用パネルを追加。
+- パース探索を「2点 → 2点 → VP自動算出」の順番式UIに整理。
+- VP1 / VP2 / VP3 を右パネルで切り替え。
+- ①1本目 / ②2本目を切り替え、操作中の基準線だけ白いアンカー2個を表示。
+- 2本の基準線の交点から各VPを自動算出。
+- VP1 / VP2 からアイレベルを自動算出。
+- マウスホイールで25〜400%ズーム。
+- 緑の実映像フレームは初期状態で固定。
+- 既存の構図ガイド、追加構図ガイド、トンネル8ハンドルを維持。
 
-## Perspective calibration
-- VP1 / VP2 / VP3 supported.
-- Each vanishing direction uses **two calibration lines**.
-- Each calibration line has **exactly two white anchor points**.
-- Drag the two anchors so the line lies on a real edge in the image.
-- The intersection of the two calibration lines is solved automatically as the VP.
-- VP1 + VP2 automatically define the horizon / eye-level line.
-- VP3 is solved independently for vertical convergence.
-- Colored VP markers are results; normal calibration is performed with the white anchors.
-- The green movie-frame transform is locked by default to prevent accidental movement.
+## Windows
+GitHub Actions / PyInstaller でビルドしてください。
 
-## View navigation
-- Mouse wheel zooms the canvas view from 25% to 400%.
-- `100%に戻す` resets wheel zoom.
-- The existing workspace scale remains available to create extra room for off-image vanishing points.
+## 操作
+1. 右側の VP1 / VP2 / VP3 を選択。
+2. 「① 1本目」の白い2点を、画像内の同一方向のエッジに合わせる。
+3. 「次の基準線へ」または「② 2本目」を押す。
+4. 別の平行エッジに白い2点を合わせる。
+5. 2本の延長線の交点からVPが自動更新される。
 
-## Existing features retained
-- Basic composition guides and filled intersection points.
-- Movable additional composition guides.
-- Tunnel guide with 8 edit handles.
-- Actual movie-frame / black-bar detection.
-- Display-only brightness, contrast, gamma and saturation correction.
-
-## Windows build
-Use the existing GitHub Actions workflow. Upload/overwrite the six repository files, commit, then run the workflow.
+V5.7 UI更新:
+- 右側を「パース / 構図ガイド / ショット分析」のタブUIに整理。
+- 基本ガイドと追加構図を分離。三分割と十字は別ボタン。
+- ガイドボタンは再クリックで非表示（「なし」ボタン不要）。
+- 基本ガイドの交点は塗りつぶし○を維持。追加構図は通常○なし、編集時のみ白アンカー。
+- トンネルは編集時8アンカーを維持。
+- 縦・横・自由線の補助線を構図タブに維持。
+- パースはVPボタンにツールチップ。1本目の2アンカーを両方動かすと自動で2本目へ進む。

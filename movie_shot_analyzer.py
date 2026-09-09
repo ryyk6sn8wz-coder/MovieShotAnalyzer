@@ -7,7 +7,7 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QFileDialog, QGridLayout, QHBoxLayout,
     QLabel, QMainWindow, QPushButton, QScrollArea, QSlider, QDoubleSpinBox,
-    QVBoxLayout, QWidget
+    QVBoxLayout, QWidget, QTabWidget
 )
 
 IMAGE_EXTENSIONS={'.jpg','.jpeg','.png','.bmp','.webp','.tif','.tiff'}
@@ -341,21 +341,22 @@ class ImageCanvas(QWidget):
         hdx=h2.x()-h1.x(); hdy=h2.y()-h1.y(); hln=max(1e-6,math.hypot(hdx,hdy)); hext=10000.0/hln
         ha=QPointF(h1.x()-hdx*hext,h1.y()-hdy*hext); hb=QPointF(h1.x()+hdx*hext,h1.y()+hdy*hext); p.drawLine(ha,hb)
         eye_y=self.image_rect.top()+self.image_rect.height()*self.owner.eye_level_y
-        # Two calibration segments per axis. Each segment has exactly two anchors.
+        # Two calibration segments per axis. Only the currently edited segment gets white anchors.
         for label,xy,color,key in vp_defs:
-            c=QColor(color); c.setAlpha(230); pen=QPen(c); pen.setWidthF(2.0); p.setPen(pen)
             for li,line in enumerate(self.owner.perspective_lines[key]):
+                active=(key==self.owner.active_perspective_axis and li==self.owner.perspective_step)
+                if key==self.owner.active_perspective_axis and self.owner.perspective_step==0 and li==1:
+                    continue
+                c=QColor(color); c.setAlpha(235 if active else 85); pen=QPen(c); pen.setWidthF(2.4 if active else 1.2); p.setPen(pen)
                 a=self._image_norm_to_point(*line[0]); b=self._image_norm_to_point(*line[1]); p.drawLine(a,b)
-                # faint infinite extension makes convergence easy to read
                 dx=b.x()-a.x(); dy=b.y()-a.y(); ln=math.hypot(dx,dy)
                 if ln>1e-6:
-                    ext=10000.0/ln; cc=QColor(color); cc.setAlpha(70); xp=QPen(cc); xp.setWidthF(1.0); xp.setStyle(Qt.PenStyle.DashLine); p.setPen(xp)
-                    p.drawLine(QPointF(a.x()-dx*ext,a.y()-dy*ext),QPointF(a.x()+dx*ext,a.y()+dy*ext)); p.setPen(pen)
-            if self.owner.show_perspective_handles.isChecked():
-                outline=QPen(QColor(color)); outline.setWidthF(2.0); p.setPen(outline); p.setBrush(QColor('#ffffff'))
-                for li,line in enumerate(self.owner.perspective_lines[key]):
-                    for ei,ptxy in enumerate(line):
-                        hp=self._image_norm_to_point(*ptxy); p.drawEllipse(QRectF(hp.x()-6,hp.y()-6,12,12))
+                    ext=10000.0/ln; cc=QColor(color); cc.setAlpha(95 if active else 35); xp=QPen(cc); xp.setWidthF(1.2 if active else .8); xp.setStyle(Qt.PenStyle.DashLine); p.setPen(xp)
+                    p.drawLine(QPointF(a.x()-dx*ext,a.y()-dy*ext),QPointF(a.x()+dx*ext,a.y()+dy*ext))
+                if active and self.owner.show_perspective_handles.isChecked():
+                    outline=QPen(QColor(color)); outline.setWidthF(2.0); p.setPen(outline); p.setBrush(QColor('#ffffff'))
+                    for ptxy in line:
+                        hp=self._image_norm_to_point(*ptxy); p.drawEllipse(QRectF(hp.x()-7,hp.y()-7,14,14))
         # solved VP markers
         for label,xy,color,key in vp_defs:
             vp=self._image_norm_to_point(*xy); c=QColor(color); c.setAlpha(245); p.setBrush(c); p.setPen(Qt.PenStyle.NoPen); p.drawEllipse(QRectF(vp.x()-7,vp.y()-7,14,14))
@@ -365,11 +366,11 @@ class ImageCanvas(QWidget):
     def _perspective_hit(self,pos):
         if not self.owner.show_perspective.isChecked() or self.pixmap is None:return None
         if self.owner.show_perspective_handles.isChecked():
-            for name in ('vp1','vp2','vp3'):
-                for li,line in enumerate(self.owner.perspective_lines[name]):
-                    for ei,xy in enumerate(line):
-                        pt=self._image_norm_to_point(*xy)
-                        if math.hypot(pos.x()-pt.x(),pos.y()-pt.y())<13:return ('perspective_anchor',name,li,ei)
+            name=self.owner.active_perspective_axis; li=self.owner.perspective_step
+            line=self.owner.perspective_lines[name][li]
+            for ei,xy in enumerate(line):
+                pt=self._image_norm_to_point(*xy)
+                if math.hypot(pos.x()-pt.x(),pos.y()-pt.y())<15:return ('perspective_anchor',name,li,ei)
         return None
 
     def wheelEvent(self,e):
@@ -564,15 +565,22 @@ class ImageCanvas(QWidget):
         self.update()
     def mouseReleaseEvent(self,e):
         if self.drag_item and self.drag_item[0].startswith('frame_'): self.owner.save_frame()
-        if self.drag_item and self.drag_item[0] in ('perspective_vp','perspective_anchor','eye_level'): self.owner.save_perspective()
+        if self.drag_item and self.drag_item[0] in ('perspective_vp','perspective_anchor','eye_level'):
+            if self.drag_item[0]=='perspective_anchor':
+                name,li,ei=self.drag_item[1],self.drag_item[2],self.drag_item[3]
+                key=(name,li); touched=self.owner._persp_anchor_touched.setdefault(key,set()); touched.add(ei)
+                if li==0 and touched=={0,1}:
+                    self.owner.perspective_step=1; self.owner._persp_anchor_touched.pop((name,1),None); self.owner.update_perspective_panel_state()
+            self.owner.save_perspective()
         self.drag_item=None
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.5 VanishPoint Calibration'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.7 Tabbed Workspace'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
+        self.active_perspective_axis='vp1'; self.perspective_step=0
         self.perspective_lines=self.default_perspective_lines()
         self.helper_v=[]; self.helper_h=[]; self.helper_free=[]; self.selected_helper=None
         self.selected_comp_guide=None
@@ -589,57 +597,17 @@ class MovieShotAnalyzer(QMainWindow):
             'pyramid': {'points': [(.5,.12),(.14,.88),(.86,.88)]},
         }
         self.helper_color='#36d1ff'; self.point_color='#ff3838'; self.frame_color='#20f26b'
-        self._build_ui(); self._style(); self.statusBar().showMessage('V5.5 — 2アンカー線×2本でVP自動算出 / ホイールズーム')
+        self._persp_anchor_touched={}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.7 — タブUI / 基本ガイド交点○ / 追加構図編集 / 2点→自動で2本目')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
         root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.5 / VanishPoint方式パースキャリブレーション'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.7 / 構図＋パースワークスペース'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
-
-        self.section(c,'構図ガイド')
-        self.show_thirds=QCheckBox('三分割（固定）'); self.show_thirds.setChecked(True)
-        self.show_cross=QCheckBox('中央十字'); self.show_golden=QCheckBox('黄金比'); self.show_spiral=QCheckBox('黄金螺旋'); self.show_diagonal=QCheckBox('対角線'); self.show_triangle=QCheckBox('三角構図'); self.show_symmetry=QCheckBox('対称軸')
-        for w in (self.show_thirds,self.show_cross,self.show_golden,self.show_spiral,self.show_diagonal,self.show_triangle,self.show_symmetry): w.toggled.connect(self.refresh); c.addWidget(w)
-
-        self.section(c,'追加構図ガイド')
-        self.show_radiating=QCheckBox('放射構図')
-        self.show_tunnel=QCheckBox('トンネル / フレームインフレーム')
-        self.show_golden_triangle=QCheckBox('ゴールデントライアングル')
-        self.show_circle=QCheckBox('円構図')
-        self.show_cshape=QCheckBox('C字構図')
-        self.show_vshape=QCheckBox('V字構図')
-        self.show_double_diagonal=QCheckBox('ダブル対角線')
-        self.show_scurve=QCheckBox('S字構図')
-        self.show_lshape=QCheckBox('L字構図')
-        self.show_pyramid=QCheckBox('ピラミッド構図')
-        for w in (self.show_radiating,self.show_tunnel,self.show_golden_triangle,self.show_circle,self.show_cshape,self.show_vshape,self.show_double_diagonal,self.show_scurve,self.show_lshape,self.show_pyramid):
-            w.toggled.connect(self.comp_guide_visibility_changed); c.addWidget(w)
-        self.edit_comp_guides=QCheckBox('追加ガイドを編集（クリックで選択）')
-        self.edit_comp_guides.setChecked(True)
-        self.edit_comp_guides.toggled.connect(self.comp_edit_toggled); c.addWidget(self.edit_comp_guides)
-        self.reset_comp_btn=QPushButton('選択中ガイドを初期位置へ戻す'); self.reset_comp_btn.setEnabled(False); self.reset_comp_btn.clicked.connect(self.reset_selected_comp_guide); c.addWidget(self.reset_comp_btn)
-        ednote=QLabel('初期状態で編集ONです。追加ガイドの線をクリックすると、そのガイドだけ○ハンドルが出ます。線をそのままドラッグ＝全体移動、○をドラッグ＝形を調整。空白をクリックすると○が消えます。')
-        ednote.setObjectName('note'); ednote.setWordWrap(True); c.addWidget(ednote)
-        kindnote=QLabel('※ Balance / Unbalanced などは固定線ではなく、後の「画像を見て判断する構図タイプ」解析に入れる予定です。')
-        kindnote.setObjectName('note'); kindnote.setWordWrap(True); c.addWidget(kindnote)
-
-        self.section(c,'補助線')
-        row=QHBoxLayout(); av=QPushButton('＋ 縦'); ah=QPushButton('＋ 横'); af=QPushButton('＋ 自由線'); av.clicked.connect(self.add_vertical); ah.clicked.connect(self.add_horizontal); af.clicked.connect(self.add_free); row.addWidget(av); row.addWidget(ah); row.addWidget(af); c.addLayout(row)
-        row=QHBoxLayout(); self.delete_helper_btn=QPushButton('選択した補助線を削除'); self.delete_helper_btn.clicked.connect(self.delete_selected_helper); self.delete_helper_btn.setEnabled(False); clear=QPushButton('補助線を全削除'); clear.clicked.connect(self.clear_helpers); row.addWidget(self.delete_helper_btn); row.addWidget(clear); c.addLayout(row)
-        hint=QLabel('縦・横線は線自体をドラッグ。自由線は両端の○で角度変更、線自体のドラッグで平行移動。\n三分割の赤線は固定です。'); hint.setObjectName('note'); hint.setWordWrap(True); c.addWidget(hint)
-
-        self.section(c,'ガイド表示')
-        grid=QGridLayout(); grid.addWidget(QLabel('線の太さ'),0,0); self.guide_width=StepControl(0.5,10.0,1.5,0.5); self.guide_width.value.valueChanged.connect(self.refresh); grid.addWidget(self.guide_width,0,1)
-        grid.addWidget(QLabel('線の透明度'),1,0); self.guide_alpha=QSlider(Qt.Orientation.Horizontal); self.guide_alpha.setRange(0,100); self.guide_alpha.setValue(90); self.guide_alpha.valueChanged.connect(self.refresh); grid.addWidget(self.guide_alpha,1,1); self.guide_alpha_label=QLabel('90%'); self.guide_alpha_label.setFixedWidth(38); self.guide_alpha.valueChanged.connect(lambda v:self.guide_alpha_label.setText(f'{v}%')); grid.addWidget(self.guide_alpha_label,1,2); c.addLayout(grid)
-        self.show_points=QCheckBox('交点に塗りつぶし○を表示'); self.show_points.setChecked(True); self.show_points.toggled.connect(self.refresh); c.addWidget(self.show_points)
-        grid=QGridLayout(); grid.addWidget(QLabel('○サイズ'),0,0); self.point_size=StepControl(2.0,30.0,8.0,0.5); self.point_size.value.valueChanged.connect(self.refresh); grid.addWidget(self.point_size,0,1); c.addLayout(grid)
-        row=QHBoxLayout(); pc=QPushButton('○の色'); pc.clicked.connect(self.choose_point_color); row.addWidget(pc); row.addStretch(1); c.addLayout(row)
-        row=QHBoxLayout(); row.addWidget(QLabel('○透明度')); self.point_alpha=QSlider(Qt.Orientation.Horizontal); self.point_alpha.setRange(0,100); self.point_alpha.setValue(100); self.point_alpha.valueChanged.connect(self.refresh); row.addWidget(self.point_alpha,1); self.point_alpha_label=QLabel('100%'); self.point_alpha_label.setFixedWidth(42); self.point_alpha.valueChanged.connect(lambda v:self.point_alpha_label.setText(f'{v}%')); row.addWidget(self.point_alpha_label); c.addLayout(row)
 
         self.section(c,'実映像フレーム')
         self.show_frame=QCheckBox('フレーム枠を表示'); self.show_frame.setChecked(True); self.manual_frame=QCheckBox('自由変形ハンドルを使う'); self.manual_frame.setChecked(True); self.show_frame.toggled.connect(self.refresh); c.addWidget(self.show_frame); c.addWidget(self.manual_frame)
@@ -648,27 +616,113 @@ class MovieShotAnalyzer(QMainWindow):
         fg=QGridLayout(); fg.addWidget(QLabel('フレーム太さ'),0,0); self.frame_width=StepControl(0.5,8.0,2.0,0.5); self.frame_width.value.valueChanged.connect(self.refresh); fg.addWidget(self.frame_width,0,1)
         fg.addWidget(QLabel('フレーム透明度'),1,0); self.frame_alpha=QSlider(Qt.Orientation.Horizontal); self.frame_alpha.setRange(0,100); self.frame_alpha.setValue(100); self.frame_alpha.valueChanged.connect(self.refresh); fg.addWidget(self.frame_alpha,1,1)
         fcbtn=QPushButton('フレーム色'); fcbtn.clicked.connect(self.choose_frame_color); fg.addWidget(fcbtn,2,0,1,2); c.addLayout(fg)
-        fhint=QLabel('通常は「緑フレームを固定」をON推奨。フレームを直す時だけOFFにすると、四隅・辺中央・枠内ドラッグが使えます。'); fhint.setObjectName('note'); fhint.setWordWrap(True); c.addWidget(fhint)
-
-        self.section(c,'パースキャリブレーション')
-        self.show_perspective=QCheckBox('VP1 / VP2 / VP3 とアイレベルを表示'); self.show_perspective.setChecked(False); self.show_perspective.toggled.connect(self.refresh); c.addWidget(self.show_perspective)
-        self.show_perspective_handles=QCheckBox('基準線のアンカー（白○）を表示'); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.toggled.connect(self.refresh); c.addWidget(self.show_perspective_handles)
-        row=QHBoxLayout(); resetp=QPushButton('パース定規を初期位置へ'); resetp.clicked.connect(self.reset_perspective); row.addWidget(resetp); c.addLayout(row)
-        self.persp_label=QLabel('VP1 / VP2 / VP3 / Horizon'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); c.addWidget(self.persp_label)
-        phint=QLabel('VanishPoint方式です。VP1/VP2/VP3ごとに基準線を2本用意し、各基準線は白○2点で合わせます。2本の交点からVPを自動算出します。緑フレームは固定ONのまま操作できます。マウスホイールで画面を拡大・縮小できます。'); phint.setObjectName('note'); phint.setWordWrap(True); c.addWidget(phint)
-        row=QHBoxLayout(); row.addWidget(QLabel('作業領域')); self.workspace_scale=QSlider(Qt.Orientation.Horizontal); self.workspace_scale.setRange(100,400); self.workspace_scale.setValue(180); self.workspace_scale.valueChanged.connect(self.refresh); row.addWidget(self.workspace_scale,1); self.workspace_label=QLabel('180%'); self.workspace_label.setFixedWidth(46); self.workspace_scale.valueChanged.connect(lambda v:self.workspace_label.setText(f'{v}%')); row.addWidget(self.workspace_label); c.addLayout(row)
-        whint=QLabel('値を大きくすると画像が小さくなり、画像外のVPを置く余白が広がります。'); whint.setObjectName('note'); whint.setWordWrap(True); c.addWidget(whint)
-        row=QHBoxLayout(); row.addWidget(QLabel('ホイールズーム')); self.zoom_label=QLabel('100%'); row.addWidget(self.zoom_label); zreset=QPushButton('100%に戻す'); zreset.clicked.connect(self.reset_zoom); row.addWidget(zreset); c.addLayout(row)
 
         self.section(c,'表示補正（元画像は変更しません）')
         self.sliders={}
         for key,label,lo,hi,val in [('brightness','明るさ',50,150,100),('contrast','コントラスト',50,150,100),('gamma','ガンマ',50,200,100),('saturation','彩度',0,200,100)]:
-            row=QHBoxLayout(); row.addWidget(QLabel(label)); s=QSlider(Qt.Orientation.Horizontal); s.setRange(lo,hi); s.setValue(val); v=QLabel(str(val)); v.setFixedWidth(32); s.valueChanged.connect(lambda n,k=key,vl=v:(vl.setText(str(n)),self.update_display())); row.addWidget(s,1); row.addWidget(v); c.addLayout(row); self.sliders[key]=s
+            row=QHBoxLayout(); row.addWidget(QLabel(label)); sld=QSlider(Qt.Orientation.Horizontal); sld.setRange(lo,hi); sld.setValue(val); v=QLabel(str(val)); v.setFixedWidth(32); sld.valueChanged.connect(lambda n,k=key,vl=v:(vl.setText(str(n)),self.update_display())); row.addWidget(sld,1); row.addWidget(v); c.addLayout(row); self.sliders[key]=sld
         resetdisp=QPushButton('表示補正をリセット'); resetdisp.clicked.connect(self.reset_display); c.addWidget(resetdisp); c.addStretch(1)
-        scroll=QScrollArea(); scroll.setObjectName('controlScroll'); scroll.setWidgetResizable(True); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); scroll.setWidget(cw); scroll.setMinimumWidth(325); scroll.setMaximumWidth(385); outer.addWidget(scroll,0)
-        self.canvas=ImageCanvas(self); outer.addWidget(self.canvas,1); self._update_nav()
+        scroll=QScrollArea(); scroll.setObjectName('controlScroll'); scroll.setWidgetResizable(True); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); scroll.setWidget(cw); scroll.setMinimumWidth(300); scroll.setMaximumWidth(350); outer.addWidget(scroll,0)
+        self.canvas=ImageCanvas(self); outer.addWidget(self.canvas,1)
+        self._build_right_tabs(outer)
+        self._update_nav(); self.update_perspective_labels(); self.update_perspective_panel_state()
+
+    def _make_toggle_button(self,text,checked=False,tooltip=''):
+        b=QPushButton(text); b.setCheckable(True); b.setChecked(checked)
+        if tooltip: b.setToolTip(tooltip)
+        return b
+
+    def _build_right_tabs(self,outer):
+        panel=QWidget(); panel.setObjectName('rightPanel'); panel.setMinimumWidth(320); panel.setMaximumWidth(390)
+        r=QVBoxLayout(panel); r.setContentsMargins(8,8,8,8); r.setSpacing(6)
+        self.right_tabs=QTabWidget(); self.right_tabs.setObjectName('rightTabs'); r.addWidget(self.right_tabs)
+        self._build_perspective_tab(); self._build_composition_tab(); self._build_analysis_tab()
+        outer.addWidget(panel,0)
+
+    def _build_perspective_tab(self):
+        tab=QWidget(); lay=QVBoxLayout(tab); lay.setContentsMargins(10,10,10,10); lay.setSpacing(8)
+        self.show_perspective=QCheckBox('パースを表示'); self.show_perspective.setChecked(True); self.show_perspective.toggled.connect(self.refresh); lay.addWidget(self.show_perspective)
+        self.show_perspective_handles=QCheckBox('操作中の白○を表示'); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_handles)
+        self.section(lay,'消失点')
+        axisrow=QHBoxLayout(); self.axis_buttons={}
+        tips={
+            'vp1':'VP1を設定。最初の基準線は白○2点をドラッグして合わせます。2点とも動かすと自動で2本目へ進みます。',
+            'vp2':'VP2を設定。別方向の平行エッジ2本から消失点を求めます。',
+            'vp3':'VP3を設定。主に垂直方向の収束を2本の線から求めます。'}
+        for key,label in [('vp1','VP1'),('vp2','VP2'),('vp3','VP3')]:
+            b=QPushButton(label); b.setCheckable(True); b.setToolTip(tips[key]); b.clicked.connect(lambda checked,k=key:self.set_perspective_axis(k)); axisrow.addWidget(b); self.axis_buttons[key]=b
+        lay.addLayout(axisrow)
+        self.persp_step_label=QLabel('1本目：白○2点を合わせる'); self.persp_step_label.setObjectName('fileLabel'); lay.addWidget(self.persp_step_label)
+        self.persp_label=QLabel('VP1 / VP2 / VP3 / Horizon'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); lay.addWidget(self.persp_label)
+        row=QHBoxLayout(); resetaxis=QPushButton('選択VPをリセット'); resetaxis.clicked.connect(self.reset_active_perspective_axis); resetall=QPushButton('全てリセット'); resetall.clicked.connect(self.reset_perspective); row.addWidget(resetaxis); row.addWidget(resetall); lay.addLayout(row)
+        self.section(lay,'表示')
+        row=QHBoxLayout(); row.addWidget(QLabel('作業領域')); self.workspace_scale=QSlider(Qt.Orientation.Horizontal); self.workspace_scale.setRange(100,400); self.workspace_scale.setValue(100); self.workspace_scale.valueChanged.connect(self.refresh); row.addWidget(self.workspace_scale,1); self.workspace_label=QLabel('100%'); self.workspace_label.setFixedWidth(46); self.workspace_scale.valueChanged.connect(lambda v:self.workspace_label.setText(f'{v}%')); row.addWidget(self.workspace_label); lay.addLayout(row)
+        row=QHBoxLayout(); row.addWidget(QLabel('ホイールズーム')); self.zoom_label=QLabel('100%'); row.addWidget(self.zoom_label); zreset=QPushButton('100%'); zreset.clicked.connect(self.reset_zoom); row.addWidget(zreset); lay.addLayout(row)
+        lay.addStretch(1); self.right_tabs.addTab(tab,'パース')
+
+    def _build_composition_tab(self):
+        tab=QWidget(); outer=QVBoxLayout(tab); outer.setContentsMargins(0,0,0,0)
+        sc=QScrollArea(); sc.setWidgetResizable(True); sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); body=QWidget(); c=QVBoxLayout(body); c.setContentsMargins(10,10,10,10); c.setSpacing(7)
+        self.section(c,'基本ガイド')
+        basic=QGridLayout(); basic.setSpacing(6)
+        specs=[('show_thirds','三分割',True),('show_cross','十字',False),('show_golden','黄金比',False),('show_spiral','黄金螺旋',False),('show_diagonal','対角線',False),('show_triangle','三角構図',False),('show_symmetry','対称軸',False)]
+        for i,(attr,label,checked) in enumerate(specs):
+            b=self._make_toggle_button(label,checked); b.toggled.connect(self.refresh); setattr(self,attr,b); basic.addWidget(b,i//2,i%2)
+        c.addLayout(basic)
+        note=QLabel('基本ガイドの直線同士の交点には、塗りつぶし○を表示できます。'); note.setObjectName('note'); note.setWordWrap(True); c.addWidget(note)
+
+        self.section(c,'追加の構図')
+        add=QGridLayout(); add.setSpacing(6)
+        specs=[('show_radiating','放射構図'),('show_tunnel','トンネル'),('show_golden_triangle','ゴールデントライアングル'),('show_circle','円構図'),('show_cshape','C字構図'),('show_vshape','V字構図'),('show_double_diagonal','ダブル対角線'),('show_scurve','S字構図'),('show_lshape','L字構図'),('show_pyramid','ピラミッド構図')]
+        for i,(attr,label) in enumerate(specs):
+            b=self._make_toggle_button(label,False); b.toggled.connect(self.comp_guide_visibility_changed); setattr(self,attr,b); add.addWidget(b,i//2,i%2)
+        c.addLayout(add)
+        self.edit_comp_guides=QCheckBox('追加構図を編集'); self.edit_comp_guides.setChecked(True); self.edit_comp_guides.toggled.connect(self.comp_edit_toggled); c.addWidget(self.edit_comp_guides)
+        self.reset_comp_btn=QPushButton('選択中ガイドを初期位置へ戻す'); self.reset_comp_btn.setEnabled(False); self.reset_comp_btn.clicked.connect(self.reset_selected_comp_guide); c.addWidget(self.reset_comp_btn)
+
+        self.section(c,'補助線')
+        row=QHBoxLayout(); av=QPushButton('＋ 縦'); ah=QPushButton('＋ 横'); af=QPushButton('＋ 自由線'); av.clicked.connect(self.add_vertical); ah.clicked.connect(self.add_horizontal); af.clicked.connect(self.add_free); row.addWidget(av); row.addWidget(ah); row.addWidget(af); c.addLayout(row)
+        row=QHBoxLayout(); self.delete_helper_btn=QPushButton('選択線を削除'); self.delete_helper_btn.clicked.connect(self.delete_selected_helper); self.delete_helper_btn.setEnabled(False); clear=QPushButton('全削除'); clear.clicked.connect(self.clear_helpers); row.addWidget(self.delete_helper_btn); row.addWidget(clear); c.addLayout(row)
+
+        self.section(c,'線・交点の設定')
+        grid=QGridLayout(); grid.addWidget(QLabel('線の太さ'),0,0); self.guide_width=StepControl(0.5,10.0,1.5,0.5); self.guide_width.value.valueChanged.connect(self.refresh); grid.addWidget(self.guide_width,0,1)
+        grid.addWidget(QLabel('線の透明度'),1,0); self.guide_alpha=QSlider(Qt.Orientation.Horizontal); self.guide_alpha.setRange(0,100); self.guide_alpha.setValue(90); self.guide_alpha.valueChanged.connect(self.refresh); grid.addWidget(self.guide_alpha,1,1); self.guide_alpha_label=QLabel('90%'); self.guide_alpha_label.setFixedWidth(38); self.guide_alpha.valueChanged.connect(lambda v:self.guide_alpha_label.setText(f'{v}%')); grid.addWidget(self.guide_alpha_label,1,2); c.addLayout(grid)
+        self.show_points=QCheckBox('基本ガイドの交点○を表示'); self.show_points.setChecked(True); self.show_points.toggled.connect(self.refresh); c.addWidget(self.show_points)
+        grid=QGridLayout(); grid.addWidget(QLabel('○サイズ'),0,0); self.point_size=StepControl(2.0,30.0,8.0,0.5); self.point_size.value.valueChanged.connect(self.refresh); grid.addWidget(self.point_size,0,1); c.addLayout(grid)
+        row=QHBoxLayout(); pc=QPushButton('○の色'); pc.clicked.connect(self.choose_point_color); row.addWidget(pc); row.addWidget(QLabel('○透明度')); self.point_alpha=QSlider(Qt.Orientation.Horizontal); self.point_alpha.setRange(0,100); self.point_alpha.setValue(100); self.point_alpha.valueChanged.connect(self.refresh); row.addWidget(self.point_alpha,1); self.point_alpha_label=QLabel('100%'); self.point_alpha_label.setFixedWidth(42); self.point_alpha.valueChanged.connect(lambda v:self.point_alpha_label.setText(f'{v}%')); row.addWidget(self.point_alpha_label); c.addLayout(row)
+        c.addStretch(1); sc.setWidget(body); outer.addWidget(sc); self.right_tabs.addTab(tab,'構図ガイド')
+
+    def _build_analysis_tab(self):
+        tab=QWidget(); lay=QVBoxLayout(tab); lay.setContentsMargins(10,10,10,10); lay.setSpacing(8)
+        self.section(lay,'ショット分析')
+        self.analysis_summary=QLabel('画像を読み込むと、ここに構図タイプ候補・パース情報・画角/レンズ推定などをまとめて表示する予定です。'); self.analysis_summary.setObjectName('fileLabel'); self.analysis_summary.setWordWrap(True); lay.addWidget(self.analysis_summary)
+        self.section(lay,'構図タイプ候補')
+        lbl=QLabel('Balance / Unbalanced、フレーム内フレーム、視線誘導など、固定ガイドだけでは判断できない項目を画像内容から判定する領域です。'); lbl.setObjectName('note'); lbl.setWordWrap(True); lay.addWidget(lbl)
+        self.section(lay,'パース結果')
+        self.analysis_perspective=QLabel('VP1 / VP2 / VP3 / Eye Level'); self.analysis_perspective.setObjectName('note'); self.analysis_perspective.setWordWrap(True); lay.addWidget(self.analysis_perspective)
+        lay.addStretch(1); self.right_tabs.addTab(tab,'ショット分析')
+
+    def set_perspective_axis(self,name):
+        self.active_perspective_axis=name; self.perspective_step=0; self._persp_anchor_touched.pop((name,0),None); self._persp_anchor_touched.pop((name,1),None); self.update_perspective_panel_state(); self.refresh()
+    def set_perspective_step(self,step):
+        self.perspective_step=0 if step<=0 else 1; self.update_perspective_panel_state(); self.refresh()
+    def next_perspective_step(self):
+        if self.perspective_step==0:self.perspective_step=1
+        else:
+            order=['vp1','vp2','vp3']; self.active_perspective_axis=order[(order.index(self.active_perspective_axis)+1)%3]; self.perspective_step=0
+        self.update_perspective_panel_state(); self.refresh()
+    def update_perspective_panel_state(self):
+        if not hasattr(self,'axis_buttons'): return
+        for k,b in self.axis_buttons.items(): b.setChecked(k==self.active_perspective_axis)
+        lab=self.active_perspective_axis.upper(); n=self.perspective_step+1
+        if hasattr(self,'persp_step_label'):
+            self.persp_step_label.setText(f'{lab}  {n}本目：白○2点をエッジに合わせる')
+    def reset_active_perspective_axis(self):
+        defaults=self.default_perspective_lines(); name=self.active_perspective_axis
+        import copy; self.perspective_lines[name]=copy.deepcopy(defaults[name]); self.solve_perspective_axis(name); self.perspective_step=0; self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
+
     def _style(self):
-        self.setStyleSheet('''QMainWindow,QWidget{background:#20242b;color:#e8edf3}#controlsWidget{background:#20242b}#controlScroll{border:1px solid #343a43;background:#20242b}#appTitle{font-size:20px;font-weight:700}#subtitle,#note{color:#aeb7c4}#section{font-size:14px;font-weight:700;color:#d9e2ec;margin-top:8px;border-top:1px solid #3b424d;padding-top:8px}#fileLabel{background:#171a20;border:1px solid #343a43;border-radius:5px;padding:8px}QPushButton{background:#303641;border:1px solid #48505d;border-radius:5px;padding:7px}QPushButton:hover{background:#3a424f}QPushButton:disabled{color:#69717c;background:#272b32}QCheckBox{padding:3px 1px}QDoubleSpinBox{background:#171a20;border:1px solid #48505d;padding:4px}QSlider::groove:horizontal{height:4px;background:#3b424d}QSlider::handle:horizontal{width:14px;margin:-5px 0;background:#8ab4f8;border-radius:7px}QScrollBar:vertical{background:#20242b;width:12px}QScrollBar::handle:vertical{background:#4a5260;min-height:28px;border-radius:5px}QStatusBar{background:#171a20;color:#aeb7c4}''')
+        self.setStyleSheet('''QMainWindow,QWidget{background:#20242b;color:#e8edf3}#controlsWidget{background:#20242b}#controlScroll{border:1px solid #343a43;background:#20242b}#appTitle{font-size:20px;font-weight:700}#panelTitle{font-size:18px;font-weight:700}#rightPanel{background:#1b1f26;border:1px solid #343a43}QTabWidget::pane{border:1px solid #343a43;background:#1b1f26}QTabBar::tab{background:#272d36;border:1px solid #3e4652;padding:9px 12px;margin-right:2px}QTabBar::tab:selected{background:#2d6cdf;color:white}QPushButton:checked{background:#2d6cdf;border-color:#68a0ff;color:white}#subtitle,#note{color:#aeb7c4}#section{font-size:14px;font-weight:700;color:#d9e2ec;margin-top:8px;border-top:1px solid #3b424d;padding-top:8px}#fileLabel{background:#171a20;border:1px solid #343a43;border-radius:5px;padding:8px}QPushButton{background:#303641;border:1px solid #48505d;border-radius:5px;padding:7px}QPushButton:hover{background:#3a424f}QPushButton:disabled{color:#69717c;background:#272b32}QCheckBox{padding:3px 1px}QDoubleSpinBox{background:#171a20;border:1px solid #48505d;padding:4px}QSlider::groove:horizontal{height:4px;background:#3b424d}QSlider::handle:horizontal{width:14px;margin:-5px 0;background:#8ab4f8;border-radius:7px}QScrollBar:vertical{background:#20242b;width:12px}QScrollBar::handle:vertical{background:#4a5260;min-height:28px;border-radius:5px}QStatusBar{background:#171a20;color:#aeb7c4}''')
     def dragEnterEvent(self,e):
         if e.mimeData().hasUrls():e.acceptProposedAction()
     def dropEvent(self,e): self.open_paths([Path(u.toLocalFile()) for u in e.mimeData().urls() if u.isLocalFile()]); e.acceptProposedAction()
@@ -762,11 +816,14 @@ class MovieShotAnalyzer(QMainWindow):
             self.perspective_by_image[str(self.paths[self.current_index])]={'vp1':tuple(self.vp1),'vp2':tuple(self.vp2),'vp3':tuple(self.vp3),'eye':float(self.eye_level_y),'lines':copy.deepcopy(self.perspective_lines)}
     def reset_perspective(self):
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
+        self.active_perspective_axis='vp1'; self.perspective_step=0
         self.perspective_lines=self.default_perspective_lines()
-        self.update_perspective_labels(); self.save_perspective(); self.refresh()
+        self.perspective_step=0; self.update_perspective_panel_state(); self.update_perspective_labels(); self.save_perspective(); self.refresh()
     def update_perspective_labels(self):
         if hasattr(self,'persp_label'):
-            self.persp_label.setText(f'VP1: ({self.vp1[0]:.2f}, {self.vp1[1]:.2f})  /  VP2: ({self.vp2[0]:.2f}, {self.vp2[1]:.2f})\nVP3: ({self.vp3[0]:.2f}, {self.vp3[1]:.2f})  /  Horizon@Center: {self.eye_level_y:.2f}')
+            txt=f'VP1: ({self.vp1[0]:.2f}, {self.vp1[1]:.2f})  /  VP2: ({self.vp2[0]:.2f}, {self.vp2[1]:.2f})\nVP3: ({self.vp3[0]:.2f}, {self.vp3[1]:.2f})  /  Horizon@Center: {self.eye_level_y:.2f}'
+            self.persp_label.setText(txt)
+            if hasattr(self,'analysis_perspective'): self.analysis_perspective.setText(txt)
 
     def comp_edit_toggled(self,on):
         if not on:
