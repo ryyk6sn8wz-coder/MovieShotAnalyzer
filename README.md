@@ -1,13 +1,14 @@
-# Movie Shot Analyzer V5.7.2
+# Movie Shot Analyzer V5.8
 
-V5.7.1をベースに、パースの2本目確定後は1本目と同じ細い線幅へ戻るように調整しました。パース操作用の白いアンカーポイントも直径14pxから10pxへ小型化しています。基本ガイドの交点○、追加構図の編集アンカー、トンネル8アンカーなど既存仕様は維持しています。
+V5.7.2をベースにパース表示を更新。
 
-# Movie Shot Analyzer V5.7.1
+- VP1 / VP2 / VP3 が確定するたびに、そのVPから放射状ガイドラインを表示
+- VP1 / VP2 / VP3 それぞれ放射線の表示ON/OFF
+- 各VPごとに放射線本数を 2〜48 本で個別調整
+- VP1 / VP2 / VP3 の色を個別変更可能
+- 色変更はVPマーカー、基準線、延長線、放射線に共通反映
+- 2本目の2アンカー確定直後に再描画し、確定線が即座に細線へ戻るよう修正
+- パースアンカーは小型サイズを維持
+- 基本ガイド交点の塗りつぶし○、追加構図、トンネル8アンカー、補助線は維持
 
-Perspective interaction fix:
-- Only line 1 is shown initially for each VP.
-- Drag its two white anchors independently.
-- After both anchors have been placed, line 2 is created and shown automatically.
-- The hidden second line no longer changes the VP/eye level while line 1 is being positioned.
-- VP is solved from the two visible user-positioned lines.
-- Existing composition guide behavior is retained.
+GitHubへ6ファイルを上書きして、既存のWindows Actions workflowを実行してください。

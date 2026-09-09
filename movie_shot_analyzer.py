@@ -334,13 +334,26 @@ class ImageCanvas(QWidget):
     def _draw_perspective(self,p):
         """VanishPoint-style calibration: two 2-anchor lines solve each VP."""
         if self.pixmap is None:return
-        vp_defs=(('VP1',self.owner.vp1,'#00d4ff','vp1'),('VP2',self.owner.vp2,'#ff4fa3','vp2'),('VP3',self.owner.vp3,'#7ee787','vp3'))
+        vp_defs=(('VP1',self.owner.vp1,self.owner.vp_ray_colors['vp1'],'vp1'),('VP2',self.owner.vp2,self.owner.vp_ray_colors['vp2'],'vp2'),('VP3',self.owner.vp3,self.owner.vp_ray_colors['vp3'],'vp3'))
         # Horizon/eye level is solved from VP1 and VP2 rather than dragged independently.
         h1=self._image_norm_to_point(*self.owner.vp1); h2=self._image_norm_to_point(*self.owner.vp2)
         ec=QColor('#ffe66d'); ec.setAlpha(190); ep=QPen(ec); ep.setWidthF(1.4); ep.setStyle(Qt.PenStyle.DashLine); p.setPen(ep)
         hdx=h2.x()-h1.x(); hdy=h2.y()-h1.y(); hln=max(1e-6,math.hypot(hdx,hdy)); hext=10000.0/hln
         ha=QPointF(h1.x()-hdx*hext,h1.y()-hdy*hext); hb=QPointF(h1.x()+hdx*hext,h1.y()+hdy*hext); p.drawLine(ha,hb)
         eye_y=self.image_rect.top()+self.image_rect.height()*self.owner.eye_level_y
+        # Fan guide lines through each solved VP. Each VP has independent visibility/count/color.
+        for label,xy,color,key in vp_defs:
+            if not self.owner._persp_axis_complete.get(key,False) or not self.owner.vp_ray_visible.get(key,True):
+                continue
+            vp=self._image_norm_to_point(*xy); count=max(2,int(self.owner.vp_ray_counts.get(key,12)))
+            rc=QColor(color); rc.setAlpha(115); rp=QPen(rc); rp.setWidthF(.9); p.setPen(rp)
+            radius=20000.0
+            # 180 degrees is sufficient because each guide is drawn as a full line through the VP.
+            for i in range(count):
+                a=math.pi*i/count
+                dx=math.cos(a)*radius; dy=math.sin(a)*radius
+                p.drawLine(QPointF(vp.x()-dx,vp.y()-dy),QPointF(vp.x()+dx,vp.y()+dy))
+
         # Two calibration segments per axis. Only the currently edited segment gets white anchors.
         for label,xy,color,key in vp_defs:
             for li,line in enumerate(self.owner.perspective_lines[key]):
@@ -595,11 +608,12 @@ class ImageCanvas(QWidget):
                         self.owner._persp_axis_complete[name]=True
                         self.owner.update_perspective_panel_state()
             self.owner.save_perspective()
+            self.owner.refresh()
         self.drag_item=None
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.7.2 Perspective Visual Fix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.8 Perspective Rays'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
@@ -621,7 +635,10 @@ class MovieShotAnalyzer(QMainWindow):
             'pyramid': {'points': [(.5,.12),(.14,.88),(.86,.88)]},
         }
         self.helper_color='#36d1ff'; self.point_color='#ff3838'; self.frame_color='#20f26b'
-        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.7.2 — 確定線を細線化 / パースアンカー小型化')
+        self.vp_ray_colors={'vp1':'#00d4ff','vp2':'#ff4fa3','vp3':'#7ee787'}
+        self.vp_ray_counts={'vp1':12,'vp2':12,'vp3':12}
+        self.vp_ray_visible={'vp1':True,'vp2':True,'vp3':True}
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.8 — VP1/VP2/VP3 放射線・本数・色設定')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
@@ -679,6 +696,17 @@ class MovieShotAnalyzer(QMainWindow):
         self.persp_step_label=QLabel('1本目：白○2点を合わせる'); self.persp_step_label.setObjectName('fileLabel'); lay.addWidget(self.persp_step_label)
         self.persp_label=QLabel('VP1 / VP2 / VP3 / Horizon'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); lay.addWidget(self.persp_label)
         row=QHBoxLayout(); resetaxis=QPushButton('選択VPをリセット'); resetaxis.clicked.connect(self.reset_active_perspective_axis); resetall=QPushButton('全てリセット'); resetall.clicked.connect(self.reset_perspective); row.addWidget(resetaxis); row.addWidget(resetall); lay.addLayout(row)
+        self.section(lay,'放射線（VPからのガイドライン）')
+        self.vp_ray_checks={}; self.vp_ray_count_labels={}; self.vp_ray_color_buttons={}
+        for key,label in [('vp1','VP1'),('vp2','VP2'),('vp3','VP3')]:
+            row=QHBoxLayout()
+            chk=QCheckBox(f'{label} 放射線'); chk.setChecked(self.vp_ray_visible[key]); chk.toggled.connect(lambda v,k=key:self.set_vp_ray_visible(k,v)); row.addWidget(chk); self.vp_ray_checks[key]=chk
+            minus=QPushButton('−'); minus.setFixedWidth(34); minus.clicked.connect(lambda checked=False,k=key:self.change_vp_ray_count(k,-1)); row.addWidget(minus)
+            val=QLabel(str(self.vp_ray_counts[key])); val.setAlignment(Qt.AlignmentFlag.AlignCenter); val.setFixedWidth(30); row.addWidget(val); self.vp_ray_count_labels[key]=val
+            plus=QPushButton('+'); plus.setFixedWidth(34); plus.clicked.connect(lambda checked=False,k=key:self.change_vp_ray_count(k,1)); row.addWidget(plus)
+            col=QPushButton('色'); col.setFixedWidth(42); col.clicked.connect(lambda checked=False,k=key:self.choose_vp_ray_color(k)); row.addWidget(col); self.vp_ray_color_buttons[key]=col
+            lay.addLayout(row)
+        self._update_vp_color_buttons()
         self.section(lay,'表示')
         row=QHBoxLayout(); row.addWidget(QLabel('作業領域')); self.workspace_scale=QSlider(Qt.Orientation.Horizontal); self.workspace_scale.setRange(100,400); self.workspace_scale.setValue(100); self.workspace_scale.valueChanged.connect(self.refresh); row.addWidget(self.workspace_scale,1); self.workspace_label=QLabel('100%'); self.workspace_label.setFixedWidth(46); self.workspace_scale.valueChanged.connect(lambda v:self.workspace_label.setText(f'{v}%')); row.addWidget(self.workspace_label); lay.addLayout(row)
         row=QHBoxLayout(); row.addWidget(QLabel('ホイールズーム')); self.zoom_label=QLabel('100%'); row.addWidget(self.zoom_label); zreset=QPushButton('100%'); zreset.clicked.connect(self.reset_zoom); row.addWidget(zreset); lay.addLayout(row)
@@ -725,6 +753,21 @@ class MovieShotAnalyzer(QMainWindow):
         self.section(lay,'パース結果')
         self.analysis_perspective=QLabel('VP1 / VP2 / VP3 / Eye Level'); self.analysis_perspective.setObjectName('note'); self.analysis_perspective.setWordWrap(True); lay.addWidget(self.analysis_perspective)
         lay.addStretch(1); self.right_tabs.addTab(tab,'ショット分析')
+
+    def set_vp_ray_visible(self,key,value):
+        self.vp_ray_visible[key]=bool(value); self.refresh()
+    def change_vp_ray_count(self,key,delta):
+        self.vp_ray_counts[key]=max(2,min(48,self.vp_ray_counts[key]+delta))
+        if hasattr(self,'vp_ray_count_labels'): self.vp_ray_count_labels[key].setText(str(self.vp_ray_counts[key]))
+        self.refresh()
+    def choose_vp_ray_color(self,key):
+        c=QColorDialog.getColor(QColor(self.vp_ray_colors[key]),self,f'{key.upper()} の色')
+        if c.isValid():
+            self.vp_ray_colors[key]=c.name(); self._update_vp_color_buttons(); self.refresh()
+    def _update_vp_color_buttons(self):
+        if not hasattr(self,'vp_ray_color_buttons'): return
+        for key,b in self.vp_ray_color_buttons.items():
+            b.setStyleSheet(f'background:{self.vp_ray_colors[key]}; color:#111; font-weight:700;')
 
     def set_perspective_axis(self,name):
         self.active_perspective_axis=name
