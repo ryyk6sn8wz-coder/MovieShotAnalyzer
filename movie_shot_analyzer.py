@@ -9,6 +9,14 @@ try:
 except Exception:
     cv2=None
     np=None
+# V5.20 perspective-family tuning constants
+AUTO_DEFAULT_RAYS = 8
+VP3_VERTICAL_PARALLEL_DEG = 3.5
+VP3_MIN_VERTICAL_SUPPORT = 5
+VP3_MIN_VERTICAL_SPREAD = 0.40
+INSIDE_VP_LOCALITY_PENALTY = 0.55
+FAMILY_MIN_ANGLE_SEPARATION_DEG = 12.0
+
 from PySide6.QtCore import QRectF, Qt, QPointF, QEvent
 from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
@@ -376,6 +384,82 @@ class ImageCanvas(QWidget):
         r=self.image_rect
         if r.width()<=1 or r.height()<=1:return (0.0,0.0)
         return ((pos.x()-r.left())/r.width(), (pos.y()-r.top())/r.height())
+
+    def _v520_segment_angle_deg(self, seg):
+        x1, y1, x2, y2 = seg[:4]
+        a = math.degrees(math.atan2(y2-y1, x2-x1)) % 180.0
+        return a
+
+    def _v520_segment_mid(self, seg):
+        x1, y1, x2, y2 = seg[:4]
+        return ((x1+x2)*0.5, (y1+y2)*0.5)
+
+    def _v520_segment_len(self, seg):
+        x1, y1, x2, y2 = seg[:4]
+        return math.hypot(x2-x1, y2-y1)
+
+    def _v520_family_cluster(self, segments, min_sep_deg=FAMILY_MIN_ANGLE_SEPARATION_DEG):
+        """Cluster detected structural segments into orientation families before solving VPs."""
+        if not segments:
+            return []
+        bins = []
+        for seg in segments:
+            a = self._v520_segment_angle_deg(seg)
+            L = max(1.0, self._v520_segment_len(seg))
+            placed = False
+            for b in bins:
+                d = abs(((a - b["angle"] + 90.0) % 180.0) - 90.0)
+                if d <= 7.5:
+                    w0 = b["weight"]
+                    b["angle"] = (b["angle"] * w0 + a * L) / (w0 + L)
+                    b["weight"] += L
+                    b["segments"].append(seg)
+                    placed = True
+                    break
+            if not placed:
+                bins.append({"angle": a, "weight": L, "segments": [seg]})
+        bins.sort(key=lambda b: b["weight"], reverse=True)
+        families = []
+        for b in bins:
+            if len(b["segments"]) < 2:
+                continue
+            if all(abs(((b["angle"]-f["angle"]+90.0)%180.0)-90.0) >= min_sep_deg for f in families):
+                families.append(b)
+            if len(families) >= 5:
+                break
+        return families
+
+    def _v520_vertical_family_is_parallel(self, family, frame_h):
+        """Treat near-vertical lines as parallel unless there is strong converging evidence."""
+        if not family or len(family.get("segments", [])) < VP3_MIN_VERTICAL_SUPPORT:
+            return True
+        segs = family["segments"]
+        angles = [self._v520_segment_angle_deg(s) for s in segs]
+        devs = [min(abs(a-90.0), abs(a+90.0), abs(a-270.0)) for a in angles]
+        med = sorted(devs)[len(devs)//2]
+        ys = [self._v520_segment_mid(s)[1] for s in segs]
+        spread = (max(ys)-min(ys))/max(1.0, float(frame_h))
+        return med <= VP3_VERTICAL_PARALLEL_DEG and spread >= VP3_MIN_VERTICAL_SPREAD
+
+    def _v520_penalize_inside_local_vp(self, vp, family_segments, frame_w, frame_h):
+        """Penalize suspicious in-frame VPs supported by short/local segments."""
+        if vp is None:
+            return 1.0
+        x, y = vp
+        inside = 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0
+        if not inside or not family_segments:
+            return 1.0
+        lengths = [self._v520_segment_len(s) for s in family_segments]
+        mids = [self._v520_segment_mid(s) for s in family_segments]
+        mean_len = sum(lengths)/max(1, len(lengths))
+        xs = [m[0] for m in mids]; ys = [m[1] for m in mids]
+        spread = ((max(xs)-min(xs))/max(1.0, frame_w) + (max(ys)-min(ys))/max(1.0, frame_h))*0.5
+        long_enough = mean_len >= 0.22*frame_w
+        well_spread = spread >= 0.45
+        if long_enough and well_spread:
+            return 0.9
+        return INSIDE_VP_LOCALITY_PENALTY
+
     def _draw_perspective(self,p):
         """VanishPoint-style calibration: two 2-anchor lines solve each VP."""
         if self.pixmap is None:return
@@ -802,7 +886,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.19 Conservative Architecture Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.20 Conservative Architecture Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -845,7 +929,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.19 / 誤検出抑制・1方向停止・学習方向優先'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.20 / 方向ファミリー解析・VP3抑制・学習線群優先'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1529,7 +1613,7 @@ class MovieShotAnalyzer(QMainWindow):
                 pairs.append((sc,a,b,d))
         pairs.sort(key=lambda x:x[0],reverse=True)
         out=[]; used_sigs=[]
-        # V5.19 deliberately refuses weak 2-direction solutions instead of drawing plausible-looking nonsense.
+        # V5.20 deliberately refuses weak 2-direction solutions instead of drawing plausible-looking nonsense.
         pair_floor=1.18 if relaxed else 1.48
         for sc,a,b,d in pairs:
             if sc < pair_floor:
@@ -1736,7 +1820,7 @@ class MovieShotAnalyzer(QMainWindow):
         if cand.get('single'):
             self.auto_analysis_quality=min(self.auto_analysis_quality,58.0)
         state='1方向のみ・2方向は判定保留' if cand.get('single') else f'{axes}方向'
-        self.auto_analysis_note=f'候補 {chr(65+index)} / {state} / 建築長線優先 / 採用線 {len(self.auto_detected_lines)}本'
+        self.auto_analysis_note=f'候補 {chr(65+index)} / {state} / 建築方向ファミリー優先 / 採用線群 {len(self.auto_detected_lines)}本'
         self.auto_analysis_label.setText(f'自動解析：信頼度 {self.auto_analysis_quality:.0f}% / {self.auto_analysis_note}')
         for i,b in enumerate(getattr(self,'auto_candidate_buttons',[])):
             b.blockSignals(True); b.setChecked(i==index); b.blockSignals(False)
@@ -1744,7 +1828,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.update_perspective_panel_state(); self.update_perspective_labels(); self.save_perspective(); self.refresh()
 
     def auto_analyze_perspective(self):
-        """V5.19: conservative direction clustering with reject/one-direction states."""
+        """V5.20: conservative direction clustering with reject/one-direction states."""
         if self.original is None:
             self.statusBar().showMessage('先に画像を開いてください。',4000); return
         if cv2 is None or np is None:
@@ -1759,7 +1843,7 @@ class MovieShotAnalyzer(QMainWindow):
                 relaxed=self._build_direction_cluster_candidates(segments,True)
                 if len(relaxed)>len(self.auto_candidates):
                     self.auto_candidates=relaxed; relaxed_used=True
-            # V5.19 intentionally does not fall back to the old free-intersection solver.
+            # V5.20 intentionally does not fall back to the old free-intersection solver.
             # If direction families are weak, report uncertainty instead of fabricating a VP pair.
             for i,b in enumerate(getattr(self,'auto_candidate_buttons',[])):
                 b.setEnabled(i<len(self.auto_candidates))
@@ -1770,7 +1854,7 @@ class MovieShotAnalyzer(QMainWindow):
             if relaxed_used:
                 self.statusBar().showMessage('方向クラスタが不足したため緩和条件も使用しました。',4500)
             self.apply_auto_candidate(0)
-            # Make the method visible in the UI so tests can distinguish V5.19 behaviour.
+            # Make the method visible in the UI so tests can distinguish V5.20 behaviour.
             sig=self.auto_candidates[0].get('direction_signature')
             if sig:
                 self.auto_analysis_note += ' / 方向 ' + '-'.join(str(int(x))+'°' for x in sig)
@@ -1986,6 +2070,43 @@ class MovieShotAnalyzer(QMainWindow):
     def choose_frame_color(self):
         c=QColorDialog.getColor(QColor(self.frame_color),self,'フレーム色')
         if c.isValid(): self.frame_color=c.name(); self.refresh()
+
+
+    def _v520_postprocess_auto_candidates(self, candidates, segments, frame_w, frame_h):
+        """V5.20: prefer distinct structural direction families; suppress weak VP3; keep uncertain shots conservative."""
+        try:
+            families = self._v520_family_cluster(segments)
+        except Exception:
+            families = []
+        if not candidates:
+            return candidates
+        # Penalize suspicious in-frame/local solutions when their supporting family is known.
+        for c in candidates:
+            try:
+                fams = c.get("families") or []
+                score = float(c.get("score", 0.0))
+                for vp_key, fam_idx in (("vp1",0),("vp2",1)):
+                    if fam_idx < len(fams):
+                        score *= self._v520_penalize_inside_local_vp(c.get(vp_key), fams[fam_idx].get("segments", []), frame_w, frame_h)
+                c["score"] = score
+            except Exception:
+                pass
+        candidates.sort(key=lambda c: float(c.get("score", 0.0)), reverse=True)
+        # Suppress VP3 when the dominant vertical family is effectively parallel.
+        try:
+            verticals = sorted(
+                [f for f in families if abs(((f["angle"]-90.0+90.0)%180.0)-90.0) <= 10.0],
+                key=lambda f: f["weight"], reverse=True
+            )
+            if verticals and self._v520_vertical_family_is_parallel(verticals[0], frame_h):
+                for c in candidates:
+                    c["vp3"] = None
+                    c["vp3_complete"] = False
+                    c["vp3_reason"] = "縦線はほぼ平行：VP3は無限遠として扱います"
+        except Exception:
+            pass
+        return candidates
+
 
 if __name__=='__main__':
     app=QApplication(sys.argv); app.setApplicationName('Movie Shot Analyzer'); w=MovieShotAnalyzer(); w.show(); sys.exit(app.exec())

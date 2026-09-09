@@ -1,3 +1,15 @@
+# Movie Shot Analyzer V5.20
+
+## V5.20 changes
+- 自動パースを「方向ファミリー」中心に整理
+- 建築・窓・机など、同じ3D方向に属する線群を先にまとめてからVP候補を評価
+- ほぼ平行な縦線はVP3を無限遠として扱い、無理な3点透視を抑制
+- 画像内の局所的なVP（人物や短線密集由来）を減点
+- A/B/C候補は方向差を重視
+- 自動解析時の放射線初期本数を8本に抑制
+- 手動・修正パース学習は維持し、方向ファミリー選択の補助に利用
+- ← / → キー、Fキー、左右パネル折りたたみ等は維持
+
 # Movie Shot Analyzer V5.19
 
 V5.19 focuses on reducing false automatic perspective results instead of forcing a VP solution on every frame.
