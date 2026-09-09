@@ -9,7 +9,7 @@ try:
 except Exception:
     cv2=None
     np=None
-# V5.21 perspective-family tuning constants
+# V5.22 perspective-family tuning constants
 AUTO_DEFAULT_RAYS = 8
 VP3_VERTICAL_PARALLEL_DEG = 3.5
 VP3_MIN_VERTICAL_SUPPORT = 5
@@ -26,7 +26,7 @@ from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPen, QPixmap, QPol
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QFileDialog, QGridLayout, QHBoxLayout,
     QLabel, QMainWindow, QPushButton, QScrollArea, QSlider, QDoubleSpinBox, QLineEdit,
-    QVBoxLayout, QWidget, QTabWidget
+    QVBoxLayout, QWidget, QTabWidget, QMessageBox
 )
 
 IMAGE_EXTENSIONS={'.jpg','.jpeg','.png','.bmp','.webp','.tif','.tiff'}
@@ -281,11 +281,11 @@ class ImageCanvas(QWidget):
             r=self.owner.point_size.val()/2
             for pt in pts[:120]: p.drawEllipse(QRectF(pt.x()-r,pt.y()-r,r*2,r*2))
         # Composition-guide edit handles. They appear only in edit mode and only for the selected guide.
-        if self.owner.edit_comp_guides.isChecked() and self.owner.selected_comp_guide:
+        if (not getattr(self.owner,'export_render_mode',False)) and self.owner.edit_comp_guides.isChecked() and self.owner.selected_comp_guide:
             self._draw_comp_handles(p,fr,self.owner.selected_comp_guide)
         # Free helper endpoints. Show only for selected free line or while dragging it.
         sel=self.owner.selected_helper
-        if sel and sel[0]=='free' and 0<=sel[1]<len(self.owner.helper_free):
+        if (not getattr(self.owner,'export_render_mode',False)) and sel and sel[0]=='free' and 0<=sel[1]<len(self.owner.helper_free):
             a,b=self.owner.helper_free[sel[1]]; pa=self.npt(fr,*a); pb=self.npt(fr,*b)
             p.setBrush(QColor('#ffffff')); hp=QPen(QColor(self.owner.helper_color)); hp.setWidth(2); p.setPen(hp)
             for pt in (pa,pb): p.drawEllipse(QRectF(pt.x()-6,pt.y()-6,12,12))
@@ -299,7 +299,7 @@ class ImageCanvas(QWidget):
             fc=QColor(self.owner.frame_color); fc.setAlpha(round(255*self.owner.frame_alpha.value()/100))
             q=QPen(fc); q.setWidthF(self.owner.frame_width.val()); q.setStyle(Qt.PenStyle.SolidLine)
             p.setPen(q); p.setBrush(Qt.BrushStyle.NoBrush); p.drawPolygon(poly)
-            if self.owner.manual_frame.isChecked() and not self.owner.lock_frame.isChecked():
+            if (not getattr(self.owner,'export_render_mode',False)) and self.owner.manual_frame.isChecked() and not self.owner.lock_frame.isChecked():
                 # Photoshop-like transform handles: four corners + four side midpoints.
                 pts=self.frame_poly(); mids=[QPointF((pts[i].x()+pts[(i+1)%4].x())/2,(pts[i].y()+pts[(i+1)%4].y())/2) for i in range(4)]
                 p.setBrush(fc); hp=QPen(QColor('#0f1712')); hp.setWidthF(1.0); p.setPen(hp)
@@ -528,12 +528,30 @@ class ImageCanvas(QWidget):
         """VanishPoint-style calibration: two 2-anchor lines solve each VP."""
         if self.pixmap is None:return
         vp_defs=(('VP1',self.owner.vp1,self.owner.vp_ray_colors['vp1'],'vp1'),('VP2',self.owner.vp2,self.owner.vp_ray_colors['vp2'],'vp2'),('VP3',self.owner.vp3,self.owner.vp_ray_colors['vp3'],'vp3'))
-        # Horizon/eye level is solved from VP1 and VP2 rather than dragged independently.
-        h1=self._image_norm_to_point(*self.owner.vp1); h2=self._image_norm_to_point(*self.owner.vp2)
-        ec=QColor('#ffe66d'); ec.setAlpha(190); ep=QPen(ec); ep.setWidthF(1.0); ep.setStyle(Qt.PenStyle.DashLine); p.setPen(ep)
-        hdx=h2.x()-h1.x(); hdy=h2.y()-h1.y(); hln=max(1e-6,math.hypot(hdx,hdy)); hext=10000.0/hln
-        ha=QPointF(h1.x()-hdx*hext,h1.y()-hdy*hext); hb=QPointF(h1.x()+hdx*hext,h1.y()+hdy*hext); p.drawLine(ha,hb)
-        eye_y=self.image_rect.top()+self.image_rect.height()*self.owner.eye_level_y
+        # V5.22: separate the geometric VP1-VP2 horizon from the readable EYE LEVEL.
+        # The geometric horizon may tilt when the camera has roll; EYE LEVEL itself is
+        # always drawn screen-horizontal at the horizon's center-crossing height.
+        base_pair_complete=(self.owner._persp_axis_complete.get('vp1',False)
+                            and self.owner._persp_axis_complete.get('vp2',False))
+        if base_pair_complete:
+            h1=self._image_norm_to_point(*self.owner.vp1); h2=self._image_norm_to_point(*self.owner.vp2)
+            hc=QColor('#c9b95d'); hc.setAlpha(120); hp=QPen(hc); hp.setWidthF(0.8); hp.setStyle(Qt.PenStyle.DashLine); p.setPen(hp)
+            hdx=h2.x()-h1.x(); hdy=h2.y()-h1.y(); hln=max(1e-6,math.hypot(hdx,hdy)); hext=10000.0/hln
+            ha=QPointF(h1.x()-hdx*hext,h1.y()-hdy*hext); hb=QPointF(h1.x()+hdx*hext,h1.y()+hdy*hext); p.drawLine(ha,hb)
+            # Label the mathematical line separately so it cannot be mistaken for EYE LEVEL.
+            cx=self.image_rect.center().x()
+            if abs(hdx)>1e-6:
+                hy=h1.y()+(cx-h1.x())*hdy/hdx
+            else:
+                hy=(h1.y()+h2.y())*0.5
+            p.setPen(hc); p.drawText(QRectF(self.image_rect.left()+6,hy-20,110,18),Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter,'VP HORIZON')
+            eye_y=hy
+        else:
+            eye_y=self.image_rect.top()+self.image_rect.height()*self.owner.eye_level_y
+
+        # Yellow EYE LEVEL is deliberately horizontal, regardless of VP horizon tilt.
+        ec=QColor('#ffe66d'); ec.setAlpha(210); ep=QPen(ec); ep.setWidthF(1.2); ep.setStyle(Qt.PenStyle.DashLine); p.setPen(ep)
+        p.drawLine(QPointF(self.image_rect.left(),eye_y),QPointF(self.image_rect.right(),eye_y))
         # Fan guide lines are intentionally deferred until the two horizontal axes
         # (VP1 + VP2) are both solved.  This keeps the canvas clean while calibrating.
         base_pair_ready=(self.owner._persp_axis_complete.get('vp1',False)
@@ -634,7 +652,7 @@ class ImageCanvas(QWidget):
                     ext=10000.0/ln; cc=QColor(color); base_alpha=self.owner.perspective_alpha.value()/100; cc.setAlpha(round(255*base_alpha*(0.55 if active else 0.25))); xp=QPen(cc)
                     xp.setWidthF(max(0.75,basew*1.5) if (active and not complete) else max(0.5,basew*0.75)); xp.setStyle(Qt.PenStyle.DashLine); p.setPen(xp)
                     p.drawLine(QPointF(a.x()-dx*ext,a.y()-dy*ext),QPointF(a.x()+dx*ext,a.y()+dy*ext))
-                if active and self.owner.show_perspective_handles.isChecked():
+                if (not getattr(self.owner,'export_render_mode',False)) and active and self.owner.show_perspective_handles.isChecked():
                     outline=QPen(QColor(color)); outline.setWidthF(2.0); p.setPen(outline); p.setBrush(QColor('#ffffff'))
                     for ptxy in line:
                         hp=self._image_norm_to_point(*ptxy); p.drawEllipse(QRectF(hp.x()-5,hp.y()-5,10,10))
@@ -644,7 +662,7 @@ class ImageCanvas(QWidget):
                 continue
             vp=self._image_norm_to_point(*xy); c=QColor(color); c.setAlpha(245); p.setBrush(c); p.setPen(Qt.PenStyle.NoPen); p.drawEllipse(QRectF(vp.x()-7,vp.y()-7,14,14))
             p.setPen(QColor('#f5f7fa')); p.drawText(QRectF(vp.x()+10,vp.y()-12,58,24),Qt.AlignmentFlag.AlignVCenter,label)
-        p.setPen(QColor('#ffe66d')); p.drawText(QRectF(8,eye_y-23,120,20),Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter,'EYE LEVEL')
+        p.setPen(QColor('#ffe66d')); p.drawText(QRectF(self.image_rect.left()+6,eye_y-23,120,20),Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter,'EYE LEVEL')
 
     def _perspective_hit(self,pos):
         if not self.owner.show_perspective.isChecked() or self.pixmap is None:return None
@@ -950,7 +968,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.21 Conservative Architecture Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.22 Conservative Architecture Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -983,6 +1001,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.vp_ray_colors={'vp1':'#00d4ff','vp2':'#ff4fa3','vp3':'#7ee787'}
         self.vp_ray_counts={'vp1':12,'vp2':12,'vp3':12}
         self.vp_ray_visible={'vp1':True,'vp2':True,'vp3':True}
+        self.export_render_mode=False
         self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.16 — 建築長線強化 + ワイド表示 + ←→画像送り')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
@@ -993,7 +1012,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.21 / 人物抑制・構造線優先・水平EYE LEVEL・線ファミリー学習'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.22 / 水平EYE LEVEL修正・VP HORIZON分離・画像一括書き出し'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1011,7 +1030,13 @@ class MovieShotAnalyzer(QMainWindow):
         self.sliders={}
         for key,label,lo,hi,val in [('brightness','明るさ',50,150,100),('contrast','コントラスト',50,150,100),('gamma','ガンマ',50,200,100),('saturation','彩度',0,200,100)]:
             row=QHBoxLayout(); row.addWidget(QLabel(label)); sld=QSlider(Qt.Orientation.Horizontal); sld.setRange(lo,hi); sld.setValue(val); v=QLabel(str(val)); v.setFixedWidth(32); sld.valueChanged.connect(lambda n,k=key,vl=v:(vl.setText(str(n)),self.update_display())); row.addWidget(sld,1); row.addWidget(v); c.addLayout(row); self.sliders[key]=sld
-        resetdisp=QPushButton('表示補正をリセット'); resetdisp.clicked.connect(self.reset_display); c.addWidget(resetdisp); c.addStretch(1)
+        resetdisp=QPushButton('表示補正をリセット'); resetdisp.clicked.connect(self.reset_display); c.addWidget(resetdisp)
+
+        self.section(c,'画像書き出し')
+        export_current=QPushButton('現在の画像を書き出し'); export_current.clicked.connect(self.export_current_image); c.addWidget(export_current)
+        export_batch=QPushButton('全画像を一括書き出し'); export_batch.clicked.connect(self.batch_export_images); c.addWidget(export_batch)
+        export_note=QLabel('表示中の構図ガイド・パース・EYE LEVEL・緑フレームを画像に重ねてPNG保存します。編集用ハンドルは出力しません。'); export_note.setObjectName('note'); export_note.setWordWrap(True); c.addWidget(export_note)
+        c.addStretch(1)
         scroll=QScrollArea(); scroll.setObjectName('controlScroll'); scroll.setWidgetResizable(True); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); scroll.setWidget(cw); scroll.setMinimumWidth(235); scroll.setMaximumWidth(275); self.left_panel=scroll; outer.addWidget(scroll,0)
         self.left_toggle=QPushButton('‹'); self.left_toggle.setObjectName('panelToggle'); self.left_toggle.setFixedWidth(22); self.left_toggle.setToolTip('左パネルを折りたたむ'); self.left_toggle.clicked.connect(self.toggle_left_panel); outer.addWidget(self.left_toggle,0)
         self.canvas=ImageCanvas(self); outer.addWidget(self.canvas,1)
@@ -1302,13 +1327,76 @@ class MovieShotAnalyzer(QMainWindow):
             self.update_display(); self.file_label.setText(f'{p.name}\n{self.current_index+1} / {len(self.paths)}\n{self.original.width} × {self.original.height} px'); self.statusBar().showMessage(str(p))
         except Exception as ex:self.file_label.setText(f'読み込み失敗: {p.name}\n{ex}')
         self._update_nav()
-    def update_display(self):
-        if self.original is None:return
+    def _display_adjusted_image(self):
+        if self.original is None:return None
         im=self.original.copy(); im=ImageEnhance.Brightness(im).enhance(self.sliders['brightness'].value()/100); im=ImageEnhance.Contrast(im).enhance(self.sliders['contrast'].value()/100); im=ImageEnhance.Color(im).enhance(self.sliders['saturation'].value()/100)
         gam=self.sliders['gamma'].value()/100
         if abs(gam-1)>0.001:
             inv=1/gam; lut=[min(255,int((i/255)**inv*255+.5)) for i in range(256)]; im=im.point(lut*3)
+        return im
+
+    def update_display(self):
+        im=self._display_adjusted_image()
+        if im is None:return
         self.canvas.pixmap=pil_to_pixmap(im); self.canvas.update()
+
+    def _render_export_image(self):
+        """Render the current image plus visible overlays at original pixel resolution."""
+        im=self._display_adjusted_image()
+        if im is None:return None
+        w,h=im.size
+        # Reuse the exact canvas painter off-screen so export matches the application.
+        temp=ImageCanvas(self); temp.setMinimumSize(1,1); temp.resize(w+36,h+36); temp.pixmap=pil_to_pixmap(im)
+        old_zoom=self.view_zoom; old_ws=self.workspace_scale.value(); old_export=self.export_render_mode
+        try:
+            self.view_zoom=1.0; self.workspace_scale.setValue(100); self.export_render_mode=True
+            qimg=QImage(w+36,h+36,QImage.Format.Format_ARGB32); qimg.fill(QColor('#171a20'))
+            qp=QPainter(qimg); temp.render(qp); qp.end()
+            # paintEvent uses an 18 px workspace inset; at 100%/1x the image is exactly W x H.
+            return qimg.copy(18,18,w,h)
+        finally:
+            self.export_render_mode=old_export; self.view_zoom=old_zoom; self.workspace_scale.setValue(old_ws)
+
+    def export_current_image(self):
+        if self.original is None or not (0<=self.current_index<len(self.paths)):
+            self.statusBar().showMessage('書き出す画像がありません',4000); return
+        self.save_frame(); self.save_perspective()
+        default=str(self.paths[self.current_index].with_name(self.paths[self.current_index].stem+'_guides.png'))
+        destination,_=QFileDialog.getSaveFileName(self,'現在の画像を書き出し',default,'PNG (*.png)')
+        if not destination:return
+        if not destination.lower().endswith('.png'): destination += '.png'
+        qimg=self._render_export_image()
+        if qimg is None or not qimg.save(destination,'PNG'):
+            QMessageBox.warning(self,'画像書き出し','画像の保存に失敗しました。'); return
+        self.statusBar().showMessage(f'画像を書き出しました: {destination}',6000)
+
+    def batch_export_images(self):
+        if not self.paths:
+            self.statusBar().showMessage('書き出す画像がありません',4000); return
+        out=QFileDialog.getExistingDirectory(self,'全画像の保存先')
+        if not out:return
+        self.save_frame(); self.save_perspective()
+        old_index=self.current_index; failures=[]; saved=0
+        try:
+            for idx,path in enumerate(self.paths):
+                self.current_index=idx; self.load_current(); QApplication.processEvents()
+                self.statusBar().showMessage(f'一括書き出し {idx+1}/{len(self.paths)}: {path.name}')
+                qimg=self._render_export_image()
+                dest=Path(out)/(path.stem+'_guides.png')
+                # Duplicate stems from different source folders get an index suffix instead of overwrite.
+                if dest.exists(): dest=Path(out)/(f'{path.stem}_{idx+1:04d}_guides.png')
+                if qimg is not None and qimg.save(str(dest),'PNG'): saved+=1
+                else: failures.append(path.name)
+                QApplication.processEvents()
+        except Exception as ex:
+            failures.append(str(ex))
+        finally:
+            self.current_index=old_index; self.load_current()
+        if failures:
+            QMessageBox.warning(self,'一括書き出し',f'{saved}枚を保存しました。\n{len(failures)}枚で失敗しました。\n\n'+'\n'.join(failures[:8]))
+        else:
+            QMessageBox.information(self,'一括書き出し',f'{saved}枚を保存しました。\n{out}')
+        self.statusBar().showMessage('全画像の一括書き出しが完了しました',6000)
     def reset_display(self):
         for k in self.sliders:self.sliders[k].setValue(100)
     def auto_frame(self):
@@ -1677,7 +1765,7 @@ class MovieShotAnalyzer(QMainWindow):
                 pairs.append((sc,a,b,d))
         pairs.sort(key=lambda x:x[0],reverse=True)
         out=[]; used_sigs=[]
-        # V5.21 deliberately refuses weak 2-direction solutions instead of drawing plausible-looking nonsense.
+        # V5.22 deliberately refuses weak 2-direction solutions instead of drawing plausible-looking nonsense.
         pair_floor=1.18 if relaxed else 1.48
         for sc,a,b,d in pairs:
             if sc < pair_floor:
@@ -1893,7 +1981,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.update_perspective_panel_state(); self.update_perspective_labels(); self.save_perspective(); self.refresh()
 
     def auto_analyze_perspective(self):
-        """V5.21: conservative direction clustering with reject/one-direction states."""
+        """V5.22: conservative direction clustering with reject/one-direction states."""
         if self.original is None:
             self.statusBar().showMessage('先に画像を開いてください。',4000); return
         if cv2 is None or np is None:
@@ -1908,7 +1996,7 @@ class MovieShotAnalyzer(QMainWindow):
                 relaxed=self._build_direction_cluster_candidates(segments,True)
                 if len(relaxed)>len(self.auto_candidates):
                     self.auto_candidates=relaxed; relaxed_used=True
-            # V5.21 intentionally does not fall back to the old free-intersection solver.
+            # V5.22 intentionally does not fall back to the old free-intersection solver.
             # If direction families are weak, report uncertainty instead of fabricating a VP pair.
             for i,b in enumerate(getattr(self,'auto_candidate_buttons',[])):
                 b.setEnabled(i<len(self.auto_candidates))
@@ -1919,7 +2007,7 @@ class MovieShotAnalyzer(QMainWindow):
             if relaxed_used:
                 self.statusBar().showMessage('方向クラスタが不足したため緩和条件も使用しました。',4500)
             self.apply_auto_candidate(0)
-            # Make the method visible in the UI so tests can distinguish V5.21 behaviour.
+            # Make the method visible in the UI so tests can distinguish V5.22 behaviour.
             sig=self.auto_candidates[0].get('direction_signature')
             if sig:
                 self.auto_analysis_note += ' / 方向 ' + '-'.join(str(int(x))+'°' for x in sig)
@@ -1966,7 +2054,10 @@ class MovieShotAnalyzer(QMainWindow):
         self.perspective_lines=self.default_perspective_lines()
         self.perspective_step=0; self.update_perspective_panel_state(); self.update_perspective_labels(); self.save_perspective(); self.refresh()
     def update_perspective_labels(self):
-        txt=f'VP1: ({self.vp1[0]:.2f}, {self.vp1[1]:.2f})  /  VP2: ({self.vp2[0]:.2f}, {self.vp2[1]:.2f})\nVP3: ({self.vp3[0]:.2f}, {self.vp3[1]:.2f})  /  Horizon@Center: {self.eye_level_y:.2f}'
+        dx=(self.vp2[0]-self.vp1[0])*(self.original.width if self.original is not None else 1)
+        dy=(self.vp2[1]-self.vp1[1])*(self.original.height if self.original is not None else 1)
+        roll=math.degrees(math.atan2(dy,dx)) if abs(dx)+abs(dy)>1e-9 else 0.0
+        txt=f'VP1: ({self.vp1[0]:.2f}, {self.vp1[1]:.2f})  /  VP2: ({self.vp2[0]:.2f}, {self.vp2[1]:.2f})\nVP3: ({self.vp3[0]:.2f}, {self.vp3[1]:.2f})  /  EyeLevelY: {self.eye_level_y:.2f}  /  Roll: {roll:+.1f}°'
         if hasattr(self,'persp_label'):
             self.persp_label.setText(txt)
         if hasattr(self,'analysis_perspective'):
@@ -2138,7 +2229,7 @@ class MovieShotAnalyzer(QMainWindow):
 
 
     def _v520_postprocess_auto_candidates(self, candidates, segments, frame_w, frame_h):
-        """V5.21: prefer distinct structural direction families; suppress weak VP3; keep uncertain shots conservative."""
+        """V5.22: prefer distinct structural direction families; suppress weak VP3; keep uncertain shots conservative."""
         try:
             families = self._v520_family_cluster(segments)
         except Exception:
