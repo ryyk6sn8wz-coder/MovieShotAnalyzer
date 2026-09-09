@@ -347,16 +347,22 @@ class ImageCanvas(QWidget):
                 active=(key==self.owner.active_perspective_axis and li==self.owner.perspective_step)
                 if key==self.owner.active_perspective_axis and self.owner.perspective_step==0 and li==1:
                     continue
-                c=QColor(color); c.setAlpha(235 if active else 85); pen=QPen(c); pen.setWidthF(2.4 if active else 1.2); p.setPen(pen)
+                complete = self.owner._persp_axis_complete.get(key, False)
+                c=QColor(color); c.setAlpha(235 if active else 85); pen=QPen(c)
+                # While positioning a calibration line, make it slightly bolder.
+                # Once the second line is confirmed, return it to the same thin weight
+                # as the first confirmed line while keeping the handles available.
+                pen.setWidthF(2.4 if (active and not complete) else 1.2); p.setPen(pen)
                 a=self._image_norm_to_point(*line[0]); b=self._image_norm_to_point(*line[1]); p.drawLine(a,b)
                 dx=b.x()-a.x(); dy=b.y()-a.y(); ln=math.hypot(dx,dy)
                 if ln>1e-6:
-                    ext=10000.0/ln; cc=QColor(color); cc.setAlpha(95 if active else 35); xp=QPen(cc); xp.setWidthF(1.2 if active else .8); xp.setStyle(Qt.PenStyle.DashLine); p.setPen(xp)
+                    ext=10000.0/ln; cc=QColor(color); cc.setAlpha(95 if active else 35); xp=QPen(cc)
+                    xp.setWidthF(1.2 if (active and not complete) else .8); xp.setStyle(Qt.PenStyle.DashLine); p.setPen(xp)
                     p.drawLine(QPointF(a.x()-dx*ext,a.y()-dy*ext),QPointF(a.x()+dx*ext,a.y()+dy*ext))
                 if active and self.owner.show_perspective_handles.isChecked():
                     outline=QPen(QColor(color)); outline.setWidthF(2.0); p.setPen(outline); p.setBrush(QColor('#ffffff'))
                     for ptxy in line:
-                        hp=self._image_norm_to_point(*ptxy); p.drawEllipse(QRectF(hp.x()-7,hp.y()-7,14,14))
+                        hp=self._image_norm_to_point(*ptxy); p.drawEllipse(QRectF(hp.x()-5,hp.y()-5,10,10))
         # solved VP markers
         for label,xy,color,key in vp_defs:
             vp=self._image_norm_to_point(*xy); c=QColor(color); c.setAlpha(245); p.setBrush(c); p.setPen(Qt.PenStyle.NoPen); p.drawEllipse(QRectF(vp.x()-7,vp.y()-7,14,14))
@@ -593,7 +599,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.7.1 Perspective Flow Fix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.7.2 Perspective Visual Fix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
@@ -615,7 +621,7 @@ class MovieShotAnalyzer(QMainWindow):
             'pyramid': {'points': [(.5,.12),(.14,.88),(.86,.88)]},
         }
         self.helper_color='#36d1ff'; self.point_color='#ff3838'; self.frame_color='#20f26b'
-        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.7.1 — パース2点→自動2本目 / 勝手に再計算しない')
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.7.2 — 確定線を細線化 / パースアンカー小型化')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
