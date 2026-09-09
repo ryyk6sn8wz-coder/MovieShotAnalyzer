@@ -556,7 +556,7 @@ class ImageCanvas(QWidget):
         base_pair_ready=(self.owner._persp_axis_complete.get('vp1',False)
                          and self.owner._persp_axis_complete.get('vp2',False))
         for label,xy,color,key in vp_defs:
-            ready = base_pair_ready and (key in ('vp1','vp2') or self.owner._persp_axis_complete.get('vp3',False))
+            ready = base_pair_ready and (key in ('vp1','vp2') or (self.owner._persp_axis_complete.get('vp3',False) and not getattr(self.owner,'vp3_at_infinity',False)))
             if not ready or not self.owner.vp_ray_visible.get(key,True):
                 continue
             vp=self._image_norm_to_point(*xy); count=max(2,int(self.owner.vp_ray_counts.get(key,12)))
@@ -1009,7 +1009,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.26.1 Manual Perspective Release Fix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.27 Sequential VP + Conservative VP3 + Auto Frame'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -1021,8 +1021,8 @@ class MovieShotAnalyzer(QMainWindow):
         self.auto_analysis_note=''
         self.auto_candidates=[]; self.auto_candidate_index=-1
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
-        self.active_perspective_axis='vp1'; self.perspective_step=0
-        self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}; self.show_perspective_grid_default=True
+        self.active_perspective_axis='vp1'; self.perspective_step=0; self.vp3_at_infinity=False
+        self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}; self.vp3_at_infinity=False; self.show_perspective_grid_default=True
         self.perspective_lines=self.default_perspective_lines()
         self.helper_v=[]; self.helper_h=[]; self.helper_free=[]; self.selected_helper=None
         self.selected_comp_guide=None
@@ -1057,7 +1057,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.26.1 / 手動パース2本目終了修正'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.27 / VP1→VP2→VP3自動進行・VP3保守化・自動フレーム'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1240,20 +1240,27 @@ class MovieShotAnalyzer(QMainWindow):
         self.begin_second_perspective_line(name)
 
     def advance_after_axis_complete(self,name):
-        """VP1 -> VP2 -> VP3 automatic workflow, matching the earlier sequential UX."""
+        """Strict pencil workflow: VP1 -> VP2 -> VP3, each starting from a blank first line."""
         order=['vp1','vp2','vp3']
         idx=order.index(name)
         if idx < 2:
             nxt=order[idx+1]
             self.active_perspective_axis=nxt
             self.perspective_step=0
-            # Start the next axis completely clean: no template line is drawn.
+            # Critical V5.27 fix: remove old/default geometry. Otherwise its white
+            # handles can intercept the pencil and prevent the next VP from starting.
+            self.perspective_lines[nxt]=[[(0.5,0.5),(0.5,0.5)],[(0.5,0.5),(0.5,0.5)]]
+            self._persp_axis_complete[nxt]=False
             self._persp_anchor_touched[(nxt,0)]=set()
             self._persp_anchor_touched.pop((nxt,1),None)
+            if nxt=='vp3':
+                self.vp3_at_infinity=False
         else:
+            # VP3 is the final stage. Keep it selected for optional white-handle tuning.
             self.active_perspective_axis='vp3'
             self.perspective_step=1
         self.update_perspective_panel_state()
+        self.refresh()
 
     def set_perspective_step(self,step):
         self.perspective_step=0 if step<=0 else 1; self.update_perspective_panel_state(); self.refresh()
@@ -2180,9 +2187,23 @@ class MovieShotAnalyzer(QMainWindow):
 
     def solve_perspective_axis(self,name):
         lines=self.perspective_lines.get(name,[])
-        if len(lines)<2:return
+        if len(lines)<2:return False
+        if name=='vp3':
+            # Vertical families in level shots are often effectively parallel.
+            # Do not manufacture a nearby VP3 from tiny line-angle noise.
+            def _ang(line):
+                dx=line[1][0]-line[0][0]; dy=line[1][1]-line[0][1]
+                return math.degrees(math.atan2(dy,dx)) % 180.0
+            a1,a2=_ang(lines[0]),_ang(lines[1])
+            da=abs(a1-a2); da=min(da,180.0-da)
+            if da < 2.5:
+                self.vp3_at_infinity=True
+                self.update_perspective_labels()
+                if hasattr(self,'canvas'): self.canvas.update()
+                return True
+            self.vp3_at_infinity=False
         ip=infinite_line_intersection(lines[0][0],lines[0][1],lines[1][0],lines[1][1])
-        if ip is None:return
+        if ip is None:return False
         x=max(-6.0,min(7.0,ip[0])); y=max(-5.0,min(6.0,ip[1]))
         if name=='vp1': self.vp1=(x,y)
         elif name=='vp2': self.vp2=(x,y)
@@ -2194,6 +2215,7 @@ class MovieShotAnalyzer(QMainWindow):
             else:self.eye_level_y=(y1+y2)/2.0
         self.update_perspective_labels()
         if hasattr(self,'canvas'): self.canvas.update()
+        return True
     def solve_all_perspective_axes(self):
         for n in ('vp1','vp2','vp3'): self.solve_perspective_axis(n)
     def reset_zoom(self):
@@ -2208,7 +2230,7 @@ class MovieShotAnalyzer(QMainWindow):
     def reset_perspective(self):
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
         self.active_perspective_axis='vp1'; self.perspective_step=0
-        self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}; self.show_perspective_grid_default=True
+        self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}; self.vp3_at_infinity=False; self.show_perspective_grid_default=True
         self.auto_detected_lines=[]; self.auto_analysis_quality=None; self.auto_analysis_note=''
         if hasattr(self,'auto_analysis_label'): self.auto_analysis_label.setText('自動解析：未実行')
         self.perspective_lines=self.default_perspective_lines()
@@ -2217,7 +2239,7 @@ class MovieShotAnalyzer(QMainWindow):
         dx=(self.vp2[0]-self.vp1[0])*(self.original.width if self.original is not None else 1)
         dy=(self.vp2[1]-self.vp1[1])*(self.original.height if self.original is not None else 1)
         roll=math.degrees(math.atan2(dy,dx)) if abs(dx)+abs(dy)>1e-9 else 0.0
-        txt=f'VP1: ({self.vp1[0]:.2f}, {self.vp1[1]:.2f})  /  VP2: ({self.vp2[0]:.2f}, {self.vp2[1]:.2f})\nVP3: ({self.vp3[0]:.2f}, {self.vp3[1]:.2f})  /  EyeLevelY: {self.eye_level_y:.2f}  /  Roll: {roll:+.1f}°'
+        vp3txt=('VP3: ∞（垂直線ほぼ平行）' if getattr(self,'vp3_at_infinity',False) else f'VP3: ({self.vp3[0]:.2f}, {self.vp3[1]:.2f})'); txt=f'VP1: ({self.vp1[0]:.2f}, {self.vp1[1]:.2f})  /  VP2: ({self.vp2[0]:.2f}, {self.vp2[1]:.2f})\n{vp3txt}  /  EyeLevelY: {self.eye_level_y:.2f}  /  Roll: {roll:+.1f}°'
         if hasattr(self,'persp_label'):
             self.persp_label.setText(txt)
         if hasattr(self,'analysis_perspective'):
