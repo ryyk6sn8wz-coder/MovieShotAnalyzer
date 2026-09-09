@@ -1,11 +1,9 @@
-# Movie Shot Analyzer V5.9.1
+# Movie Shot Analyzer V5.9.2
 
-V5.9 のパース鉛筆入力を改良した版です。
+V5.9.2 fixes the two-stroke pencil calibration flow.
 
-## 主な変更
-- VP1 / VP2 / VP3 の1本目をドラッグで鉛筆のように引けます。
-- 1本目を離すと2本目入力へ自動で進みます。
-- 2本目も自動配置されたアンカーではなく、画像上をドラッグして鉛筆のように新しく引けます。
-- 2本目を引き終えるとVPを計算して確定します。
-- 確定後は2本とも細線になり、白い端点で微調整できます。
-- 既存のパースグリッド、放射線、本数・色変更、構図ガイド、交点○、トンネル8アンカー等は維持しています。
+- The second calibration line is visible while you drag it.
+- Both the first and second calibration lines are drawn directly by mouse drag.
+- Perspective drawing uses a pencil-shaped cursor instead of the cross cursor.
+- After the second stroke is released, the VP is solved and both calibration lines become confirmed thin lines.
+- Existing VP rays, in-frame perspective grid, composition guides, basic-guide intersection markers, movable extra guides, and tunnel 8 handles remain available.

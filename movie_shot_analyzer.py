@@ -3,7 +3,7 @@ import math, sys
 from pathlib import Path
 from PIL import Image, ImageEnhance
 from PySide6.QtCore import QRectF, Qt, QPointF
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QFileDialog, QGridLayout, QHBoxLayout,
     QLabel, QMainWindow, QPushButton, QScrollArea, QSlider, QDoubleSpinBox,
@@ -406,8 +406,11 @@ class ImageCanvas(QWidget):
                     continue
                 # In pencil mode the second calibration line stays completely hidden
                 # until the user actually starts drawing it.
+                drawing_this = bool(self.drag_item and self.drag_item[0]=='perspective_draw'
+                                    and self.drag_item[1]==key and self.drag_item[2]==li)
                 if (key==self.owner.active_perspective_axis and li==1
-                        and not self.owner._persp_anchor_touched.get((key,1),set())):
+                        and not self.owner._persp_anchor_touched.get((key,1),set())
+                        and not drawing_this):
                     continue
                 complete = self.owner._persp_axis_complete.get(key, False)
                 c=QColor(color); c.setAlpha(235 if active else 85); pen=QPen(c)
@@ -503,13 +506,30 @@ class ImageCanvas(QWidget):
         if self.owner.manual_frame.isChecked() and not self.owner.lock_frame.isChecked() and self._frame_clip_path().contains(pos):
             return ('frame_move',)
         return None
+    def _get_pencil_cursor(self):
+        """Small pencil cursor with the hot spot at the graphite tip."""
+        if hasattr(self, "_pencil_cursor_cache"):
+            return self._pencil_cursor_cache
+        pm=QPixmap(28,28); pm.fill(Qt.GlobalColor.transparent)
+        qp=QPainter(pm); qp.setRenderHint(QPainter.RenderHint.Antialiasing,True)
+        # Pencil body, tilted from bottom-left tip toward top-right.
+        body=QPen(QColor('#f0c94a')); body.setWidthF(5.0); body.setCapStyle(Qt.PenCapStyle.RoundCap)
+        qp.setPen(body); qp.drawLine(QPointF(7,21),QPointF(21,7))
+        edge=QPen(QColor('#7f8792')); edge.setWidthF(1.2); qp.setPen(edge); qp.drawLine(QPointF(8,20),QPointF(20,8))
+        # Graphite tip and eraser cap.
+        tip=QPen(QColor('#f4f6f8')); tip.setWidthF(2.0); tip.setCapStyle(Qt.PenCapStyle.RoundCap); qp.setPen(tip); qp.drawLine(QPointF(4.5,23.5),QPointF(7.3,20.7))
+        er=QPen(QColor('#ff7b8a')); er.setWidthF(5.0); er.setCapStyle(Qt.PenCapStyle.RoundCap); qp.setPen(er); qp.drawPoint(QPointF(22,6))
+        qp.end()
+        self._pencil_cursor_cache=QCursor(pm,5,23)
+        return self._pencil_cursor_cache
+
     def _update_cursor(self,pos):
         hit=self._hit(pos)
         if not hit:
             if (hasattr(self.owner,'right_tabs') and self.owner.right_tabs.currentIndex()==0
                     and hasattr(self.owner,'perspective_pencil') and self.owner.perspective_pencil.isChecked()
                     and self.image_rect.contains(pos)):
-                self.setCursor(Qt.CursorShape.CrossCursor); return
+                self.setCursor(self._get_pencil_cursor()); return
             self.unsetCursor(); return
         typ=hit[0]
         if typ in ('perspective_vp','perspective_anchor'): self.setCursor(Qt.CursorShape.SizeAllCursor)
@@ -541,7 +561,7 @@ class ImageCanvas(QWidget):
             self.owner.perspective_lines[name]=lines
             self.drag_item=('perspective_draw',name,li)
             self._persp_draw_start=(nx,ny)
-            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.setCursor(self._get_pencil_cursor())
             self.update(); return
 
         hit=self._hit(pos); self.drag_item=hit
@@ -714,7 +734,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.9.1 Two-Stroke Pencil Calibration'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.9.2 Pencil Cursor + Second-Stroke Visibility'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
