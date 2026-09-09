@@ -794,6 +794,8 @@ class ImageCanvas(QWidget):
             self.owner.perspective_lines[name]=lines
             self.drag_item=('perspective_draw',name,li)
             self._persp_draw_start=(nx,ny)
+            self._persp_draw_start_pos=QPointF(pos)
+            self._persp_stroke_moved=False
             self.setCursor(self._get_pencil_cursor())
             self.update(); return
 
@@ -830,12 +832,25 @@ class ImageCanvas(QWidget):
 
             line=self.owner.perspective_lines[name][li]
             dx=line[1][0]-line[0][0]; dy=line[1][1]-line[0][1]
-            valid=math.hypot(dx,dy) >= 0.015
+
+            # V5.28: short architectural edges must be usable.
+            # A stroke is valid if the user actually dragged ~1 screen pixel.
+            # The old normalized 0.015 threshold rejected small desks/windows in the distance.
+            if hasattr(self,'_persp_draw_start_pos') and self.image_rect.width()>0 and self.image_rect.height()>0:
+                p0=self._image_norm_to_point(*line[0])
+                p1=self._image_norm_to_point(*line[1])
+                pixel_len=math.hypot(p1.x()-p0.x(), p1.y()-p0.y())
+            else:
+                pixel_len=math.hypot(dx*self.image_rect.width(), dy*self.image_rect.height())
+            valid=bool(getattr(self,'_persp_stroke_moved',False) or pixel_len >= 1.0)
 
             # Critical: leave drag mode BEFORE solving/changing axis.  No subsequent
             # mouseMove can keep modifying line 2, even if Qt delivered release late.
             self.drag_item=None
             self._persp_draw_start=None
+            self._persp_stroke_moved=False
+            if hasattr(self,'_persp_draw_start_pos'):
+                del self._persp_draw_start_pos
             self.unsetCursor()
 
             if not valid:
@@ -849,7 +864,9 @@ class ImageCanvas(QWidget):
                 self.owner._persp_anchor_touched[(name,1)]=set()
                 self.owner.update_perspective_panel_state()
             else:
-                # Line 2 is now immutable; solve once, mark complete, then advance.
+                # Line 2 is now immutable. Even if the two chosen lines are almost
+                # parallel, the manual stage itself is considered complete and we
+                # advance to the next VP. This keeps VP1 -> VP2 -> VP3 deterministic.
                 self.owner.solve_perspective_axis(name)
                 self.owner._persp_axis_complete[name]=True
                 self.owner.perspective_source='manual'
@@ -876,6 +893,11 @@ class ImageCanvas(QWidget):
         fr=self.frame_rect(); typ=self.drag_item[0]; pos=e.position()
         if typ=='perspective_draw':
             name,li=self.drag_item[1],self.drag_item[2]
+            if hasattr(self,'_persp_draw_start_pos'):
+                pdx=pos.x()-self._persp_draw_start_pos.x()
+                pdy=pos.y()-self._persp_draw_start_pos.y()
+                if math.hypot(pdx,pdy) >= 1.0:
+                    self._persp_stroke_moved=True
             nx,ny=self._point_to_image_norm(pos)
             nx=max(-3.0,min(4.0,nx)); ny=max(-2.0,min(3.0,ny))
             lines=[[tuple(pt) for pt in line] for line in self.owner.perspective_lines[name]]
@@ -1009,7 +1031,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.27 Sequential VP + Conservative VP3 + Auto Frame'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.28 Short-Line Sequential VP'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -1057,7 +1079,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.27 / VP1→VP2→VP3自動進行・VP3保守化・自動フレーム'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.28 / 短い基準線対応・VP1→VP2→VP3確定強化'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1277,9 +1299,9 @@ class MovieShotAnalyzer(QMainWindow):
             if self._persp_axis_complete.get(self.active_perspective_axis,False):
                 self.persp_step_label.setText(f'{lab} 完了：白○で微調整')
             elif self.perspective_step==0:
-                self.persp_step_label.setText(f'{lab} 1本目：ドラッグして基準線を引く')
+                self.persp_step_label.setText(f'{lab} 1本目：短いエッジでもOK・ドラッグして基準線')
             else:
-                self.persp_step_label.setText(f'{lab} 2本目：ドラッグして別の平行エッジに基準線を引く')
+                self.persp_step_label.setText(f'{lab} 2本目：短いエッジでもOK・離すと確定')
     def reset_active_perspective_axis(self):
         defaults=self.default_perspective_lines(); name=self.active_perspective_axis
         import copy; self.perspective_lines[name]=copy.deepcopy(defaults[name]); self._persp_axis_complete[name]=False; self._persp_anchor_touched[(name,0)]=set(); self._persp_anchor_touched.pop((name,1),None); self.perspective_step=0; self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
