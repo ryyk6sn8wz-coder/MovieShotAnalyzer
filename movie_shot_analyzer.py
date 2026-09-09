@@ -487,8 +487,13 @@ class ImageCanvas(QWidget):
         elif typ=='perspective_anchor':
             name,li,ei=self.drag_item[1],self.drag_item[2],self.drag_item[3]
             nx,ny=self._point_to_image_norm(pos); nx=max(-3.0,min(4.0,nx)); ny=max(-2.0,min(3.0,ny))
-            lines=[[tuple(pt) for pt in line] for line in self.owner.perspective_lines[name]]; lines[li][ei]=(nx,ny); self.owner.perspective_lines[name]=lines
-            self.owner.solve_perspective_axis(name)
+            # Move only the selected white anchor. While line 1 is being positioned,
+            # do not let the hidden/default line 2 affect VP or eye-level calculations.
+            lines=[[tuple(pt) for pt in line] for line in self.owner.perspective_lines[name]]
+            lines[li][ei]=(nx,ny)
+            self.owner.perspective_lines[name]=lines
+            if li==1:
+                self.owner.solve_perspective_axis(name)
         elif typ=='comp_handle':
             name,i=self.drag_item[1],self.drag_item[2]; d=self.owner.comp_guides[name]; nx,ny=self._pos_to_norm(pos,fr)
             if name=='radiating': d['center']=(nx,ny)
@@ -568,19 +573,32 @@ class ImageCanvas(QWidget):
         if self.drag_item and self.drag_item[0] in ('perspective_vp','perspective_anchor','eye_level'):
             if self.drag_item[0]=='perspective_anchor':
                 name,li,ei=self.drag_item[1],self.drag_item[2],self.drag_item[3]
-                key=(name,li); touched=self.owner._persp_anchor_touched.setdefault(key,set()); touched.add(ei)
+                key=(name,li)
+                touched=self.owner._persp_anchor_touched.setdefault(key,set())
+                touched.add(ei)
                 if li==0 and touched=={0,1}:
-                    self.owner.perspective_step=1; self.owner._persp_anchor_touched.pop((name,1),None); self.owner.update_perspective_panel_state()
+                    # First line is confirmed by two user-adjusted anchors.
+                    # Now create and reveal line 2 automatically.
+                    self.owner.prepare_second_perspective_line(name)
+                    self.owner.perspective_step=1
+                    self.owner._persp_anchor_touched[(name,1)]=set()
+                    self.owner.update_perspective_panel_state()
+                elif li==1:
+                    self.owner.solve_perspective_axis(name)
+                    if touched=={0,1}:
+                        self.owner._persp_axis_complete[name]=True
+                        self.owner.update_perspective_panel_state()
             self.owner.save_perspective()
         self.drag_item=None
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.7 Tabbed Workspace'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.7.1 Perspective Flow Fix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
         self.active_perspective_axis='vp1'; self.perspective_step=0
+        self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}
         self.perspective_lines=self.default_perspective_lines()
         self.helper_v=[]; self.helper_h=[]; self.helper_free=[]; self.selected_helper=None
         self.selected_comp_guide=None
@@ -597,7 +615,7 @@ class MovieShotAnalyzer(QMainWindow):
             'pyramid': {'points': [(.5,.12),(.14,.88),(.86,.88)]},
         }
         self.helper_color='#36d1ff'; self.point_color='#ff3838'; self.frame_color='#20f26b'
-        self._persp_anchor_touched={}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.7 — タブUI / 基本ガイド交点○ / 追加構図編集 / 2点→自動で2本目')
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.7.1 — パース2点→自動2本目 / 勝手に再計算しない')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
@@ -703,7 +721,33 @@ class MovieShotAnalyzer(QMainWindow):
         lay.addStretch(1); self.right_tabs.addTab(tab,'ショット分析')
 
     def set_perspective_axis(self,name):
-        self.active_perspective_axis=name; self.perspective_step=0; self._persp_anchor_touched.pop((name,0),None); self._persp_anchor_touched.pop((name,1),None); self.update_perspective_panel_state(); self.refresh()
+        self.active_perspective_axis=name
+        # Reopening a completed VP goes straight to line 2 for fine adjustment.
+        # A new VP always starts with only line 1 visible.
+        if self._persp_axis_complete.get(name,False):
+            self.perspective_step=1
+        else:
+            self.perspective_step=0
+            self._persp_anchor_touched[(name,0)]=set()
+            self._persp_anchor_touched.pop((name,1),None)
+        self.update_perspective_panel_state(); self.refresh()
+    def prepare_second_perspective_line(self,name):
+        """Create line 2 as a translated copy of line 1, then let the user place it."""
+        lines=self.perspective_lines[name]
+        (x1,y1),(x2,y2)=lines[0]
+        dx=x2-x1; dy=y2-y1; ln=max(1e-6,math.hypot(dx,dy))
+        px=-dy/ln; py=dx/ln; amount=0.18
+        choices=[]
+        for sign in (1,-1):
+            ox=px*amount*sign; oy=py*amount*sign
+            a=(x1+ox,y1+oy); b=(x2+ox,y2+oy)
+            penalty=sum(max(0,-v)+max(0,v-1) for v in (a[0],a[1],b[0],b[1]))
+            choices.append((penalty,a,b))
+        _,a,b=min(choices,key=lambda z:z[0])
+        lines[1]=[a,b]
+        self.perspective_lines[name]=lines
+        self._persp_axis_complete[name]=False
+
     def set_perspective_step(self,step):
         self.perspective_step=0 if step<=0 else 1; self.update_perspective_panel_state(); self.refresh()
     def next_perspective_step(self):
@@ -714,12 +758,17 @@ class MovieShotAnalyzer(QMainWindow):
     def update_perspective_panel_state(self):
         if not hasattr(self,'axis_buttons'): return
         for k,b in self.axis_buttons.items(): b.setChecked(k==self.active_perspective_axis)
-        lab=self.active_perspective_axis.upper(); n=self.perspective_step+1
+        lab=self.active_perspective_axis.upper()
         if hasattr(self,'persp_step_label'):
-            self.persp_step_label.setText(f'{lab}  {n}本目：白○2点をエッジに合わせる')
+            if self._persp_axis_complete.get(self.active_perspective_axis,False):
+                self.persp_step_label.setText(f'{lab} 完了：白○で微調整')
+            elif self.perspective_step==0:
+                self.persp_step_label.setText(f'{lab} 1本目：白○2点をエッジに合わせる')
+            else:
+                self.persp_step_label.setText(f'{lab} 2本目：自動表示された白○2点を別の平行エッジへ')
     def reset_active_perspective_axis(self):
         defaults=self.default_perspective_lines(); name=self.active_perspective_axis
-        import copy; self.perspective_lines[name]=copy.deepcopy(defaults[name]); self.solve_perspective_axis(name); self.perspective_step=0; self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
+        import copy; self.perspective_lines[name]=copy.deepcopy(defaults[name]); self._persp_axis_complete[name]=False; self._persp_anchor_touched[(name,0)]=set(); self._persp_anchor_touched.pop((name,1),None); self.perspective_step=0; self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
 
     def _style(self):
         self.setStyleSheet('''QMainWindow,QWidget{background:#20242b;color:#e8edf3}#controlsWidget{background:#20242b}#controlScroll{border:1px solid #343a43;background:#20242b}#appTitle{font-size:20px;font-weight:700}#panelTitle{font-size:18px;font-weight:700}#rightPanel{background:#1b1f26;border:1px solid #343a43}QTabWidget::pane{border:1px solid #343a43;background:#1b1f26}QTabBar::tab{background:#272d36;border:1px solid #3e4652;padding:9px 12px;margin-right:2px}QTabBar::tab:selected{background:#2d6cdf;color:white}QPushButton:checked{background:#2d6cdf;border-color:#68a0ff;color:white}#subtitle,#note{color:#aeb7c4}#section{font-size:14px;font-weight:700;color:#d9e2ec;margin-top:8px;border-top:1px solid #3b424d;padding-top:8px}#fileLabel{background:#171a20;border:1px solid #343a43;border-radius:5px;padding:8px}QPushButton{background:#303641;border:1px solid #48505d;border-radius:5px;padding:7px}QPushButton:hover{background:#3a424f}QPushButton:disabled{color:#69717c;background:#272b32}QCheckBox{padding:3px 1px}QDoubleSpinBox{background:#171a20;border:1px solid #48505d;padding:4px}QSlider::groove:horizontal{height:4px;background:#3b424d}QSlider::handle:horizontal{width:14px;margin:-5px 0;background:#8ab4f8;border-radius:7px}QScrollBar:vertical{background:#20242b;width:12px}QScrollBar::handle:vertical{background:#4a5260;min-height:28px;border-radius:5px}QStatusBar{background:#171a20;color:#aeb7c4}''')
@@ -753,7 +802,9 @@ class MovieShotAnalyzer(QMainWindow):
             self.vp1=tuple(pd.get('vp1',(-0.30,0.50))); self.vp2=tuple(pd.get('vp2',(1.30,0.50))); self.vp3=tuple(pd.get('vp3',(0.50,-0.65))); self.eye_level_y=float(pd.get('eye',0.50))
             import copy
             self.perspective_lines=copy.deepcopy(pd.get('lines',self.default_perspective_lines()))
-            self.update_perspective_labels()
+            self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}
+            self.active_perspective_axis='vp1'; self.perspective_step=0
+            self.update_perspective_panel_state(); self.update_perspective_labels()
             self.update_display(); self.file_label.setText(f'{p.name}\n{self.current_index+1} / {len(self.paths)}\n{self.original.width} × {self.original.height} px'); self.statusBar().showMessage(str(p))
         except Exception as ex:self.file_label.setText(f'読み込み失敗: {p.name}\n{ex}')
         self._update_nav()
@@ -817,6 +868,7 @@ class MovieShotAnalyzer(QMainWindow):
     def reset_perspective(self):
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
         self.active_perspective_axis='vp1'; self.perspective_step=0
+        self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}
         self.perspective_lines=self.default_perspective_lines()
         self.perspective_step=0; self.update_perspective_panel_state(); self.update_perspective_labels(); self.save_perspective(); self.refresh()
     def update_perspective_labels(self):
