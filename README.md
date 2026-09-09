@@ -1,14 +1,27 @@
-# Movie Shot Analyzer V5.11
+# Movie Shot Analyzer V5.12 — Auto Perspective + Smart Lens
 
-Perspective + lens foundation release.
+V5.11 を土台に、自動パース解析とレンズ推定の改良を追加した版です。
 
-- VP1 -> VP2 -> VP3 sequential pencil calibration.
-- Two pencil-drawn calibration lines per VP.
-- VP fan rays and in-frame perspective grid.
-- Far-off-screen VP ray support.
-- 35mm-equivalent focal length estimate from solved orthogonal vanishing points.
-- Horizontal/vertical FOV, focal range, lens class, and confidence display.
-- VP3 can improve confidence by checking three-axis consistency.
-- Existing composition guides, basic-guide intersection dots, movable added guides, tunnel 8 handles, helper lines, frame tools, and display correction are retained.
+## V5.12 の主な追加
+- 「自動解析」ボタンで画像内の長い直線を検出
+- 直線の収束から VP1 / VP2 / VP3 候補を自動推定
+- VP1 / VP2 が確定するとアイレベルを自動算出
+- 自動解析後に VP 放射線と画像内パースグリッドを自動表示
+- 「検出線」ONで、自動解析が根拠に使った線を薄く確認可能
+- 自動結果は既存の白アンカー／鉛筆入力で修正可能
+- レンズ推定は VP1×VP2 を主推定、VP3 を検証として扱う方式へ変更
+- 35mm換算の推定焦点距離、有力レンジ、一般的な焦点距離候補、水平/垂直画角、信頼度、判定理由を表示
+- パースとレンズを同じ「パース・レンズ」タブに統合
+- パース線・放射線・画像内グリッドを V5.11 より細く調整
 
-Lens estimates are approximate and assume a centered principal point, square pixels, and orthogonal world directions. Cropping and stylized perspective can increase error.
+## 自動解析について
+自動解析は候補を素早く出すための補助機能です。アニメ背景、曲線主体の画面、誇張パース、被写界深度や人物でエッジが隠れる画面では誤差が出ます。結果は手動で修正できます。
+
+## 実行
+`run.bat`
+
+## Windows build
+`build_exe.bat`
+
+## macOS build
+`build_macos.sh`

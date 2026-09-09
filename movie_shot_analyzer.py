@@ -1,7 +1,14 @@
 from __future__ import annotations
 import math, sys
+import random
 from pathlib import Path
 from PIL import Image, ImageEnhance
+try:
+    import cv2
+    import numpy as np
+except Exception:
+    cv2=None
+    np=None
 from PySide6.QtCore import QRectF, Qt, QPointF
 from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
@@ -337,7 +344,7 @@ class ImageCanvas(QWidget):
         vp_defs=(('VP1',self.owner.vp1,self.owner.vp_ray_colors['vp1'],'vp1'),('VP2',self.owner.vp2,self.owner.vp_ray_colors['vp2'],'vp2'),('VP3',self.owner.vp3,self.owner.vp_ray_colors['vp3'],'vp3'))
         # Horizon/eye level is solved from VP1 and VP2 rather than dragged independently.
         h1=self._image_norm_to_point(*self.owner.vp1); h2=self._image_norm_to_point(*self.owner.vp2)
-        ec=QColor('#ffe66d'); ec.setAlpha(190); ep=QPen(ec); ep.setWidthF(1.4); ep.setStyle(Qt.PenStyle.DashLine); p.setPen(ep)
+        ec=QColor('#ffe66d'); ec.setAlpha(190); ep=QPen(ec); ep.setWidthF(1.0); ep.setStyle(Qt.PenStyle.DashLine); p.setPen(ep)
         hdx=h2.x()-h1.x(); hdy=h2.y()-h1.y(); hln=max(1e-6,math.hypot(hdx,hdy)); hext=10000.0/hln
         ha=QPointF(h1.x()-hdx*hext,h1.y()-hdy*hext); hb=QPointF(h1.x()+hdx*hext,h1.y()+hdy*hext); p.drawLine(ha,hb)
         eye_y=self.image_rect.top()+self.image_rect.height()*self.owner.eye_level_y
@@ -350,7 +357,7 @@ class ImageCanvas(QWidget):
             if not ready or not self.owner.vp_ray_visible.get(key,True):
                 continue
             vp=self._image_norm_to_point(*xy); count=max(2,int(self.owner.vp_ray_counts.get(key,12)))
-            rc=QColor(color); rc.setAlpha(155); rp=QPen(rc); rp.setWidthF(1.0); p.setPen(rp)
+            rc=QColor(color); rc.setAlpha(155); rp=QPen(rc); rp.setWidthF(0.65); p.setPen(rp)
             radius=20000.0
 
             # Aim the fan through the actual image rectangle.  If a VP is far outside
@@ -396,11 +403,25 @@ class ImageCanvas(QWidget):
             if hasattr(self.owner,'show_perspective_grid') and self.owner.show_perspective_grid.isChecked():
                 p.save()
                 p.setClipPath(self._frame_clip_path())
-                gc=QColor(color); gc.setAlpha(105); gp=QPen(gc); gp.setWidthF(0.9); p.setPen(gp)
+                gc=QColor(color); gc.setAlpha(105); gp=QPen(gc); gp.setWidthF(0.5); p.setPen(gp)
                 for a in angles:
                     dx=math.cos(a)*radius; dy=math.sin(a)*radius
                     p.drawLine(QPointF(vp.x()-dx,vp.y()-dy),QPointF(vp.x()+dx,vp.y()+dy))
                 p.restore()
+
+        # Optional source-line overlay from automatic detection.  These are not the
+        # perspective grid itself; they show the image edges that supported the solve.
+        if hasattr(self.owner,'show_auto_detected_lines') and self.owner.show_auto_detected_lines.isChecked():
+            p.save(); p.setClipPath(self._frame_clip_path())
+            for item in getattr(self.owner,'auto_detected_lines',[]):
+                try:
+                    key,a0,b0=item[0],item[1],item[2]
+                    col=QColor(self.owner.vp_ray_colors.get(key,'#aab4c0')); col.setAlpha(95)
+                    pen=QPen(col); pen.setWidthF(0.65); p.setPen(pen)
+                    p.drawLine(self._image_norm_to_point(*a0),self._image_norm_to_point(*b0))
+                except Exception:
+                    pass
+            p.restore()
 
         # Two calibration segments per axis.  Unsolved/inactive axes are fully hidden,
         # and even the active axis shows a segment only after the user actually draws it.
@@ -420,12 +441,12 @@ class ImageCanvas(QWidget):
                 # While positioning a calibration line, make it slightly bolder.
                 # Once the second line is confirmed, return it to the same thin weight
                 # as the first confirmed line while keeping the handles available.
-                pen.setWidthF(2.4 if (active and not complete) else 1.2); p.setPen(pen)
+                pen.setWidthF(1.5 if (active and not complete) else 0.75); p.setPen(pen)
                 a=self._image_norm_to_point(*line[0]); b=self._image_norm_to_point(*line[1]); p.drawLine(a,b)
                 dx=b.x()-a.x(); dy=b.y()-a.y(); ln=math.hypot(dx,dy)
                 if ln>1e-6:
                     ext=10000.0/ln; cc=QColor(color); cc.setAlpha(95 if active else 35); xp=QPen(cc)
-                    xp.setWidthF(1.2 if (active and not complete) else .8); xp.setStyle(Qt.PenStyle.DashLine); p.setPen(xp)
+                    xp.setWidthF(0.9 if (active and not complete) else .55); xp.setStyle(Qt.PenStyle.DashLine); p.setPen(xp)
                     p.drawLine(QPointF(a.x()-dx*ext,a.y()-dy*ext),QPointF(a.x()+dx*ext,a.y()+dy*ext))
                 if active and self.owner.show_perspective_handles.isChecked():
                     outline=QPen(QColor(color)); outline.setWidthF(2.0); p.setPen(outline); p.setBrush(QColor('#ffffff'))
@@ -738,9 +759,12 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.11 Perspective + Lens'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.12 Auto Perspective + Smart Lens'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
+        self.auto_detected_lines=[]
+        self.auto_analysis_quality=None
+        self.auto_analysis_note=''
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
         self.active_perspective_axis='vp1'; self.perspective_step=0
         self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}; self.show_perspective_grid_default=True
@@ -763,14 +787,14 @@ class MovieShotAnalyzer(QMainWindow):
         self.vp_ray_colors={'vp1':'#00d4ff','vp2':'#ff4fa3','vp3':'#7ee787'}
         self.vp_ray_counts={'vp1':12,'vp2':12,'vp3':12}
         self.vp_ray_visible={'vp1':True,'vp2':True,'vp3':True}
-        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.11 — 鉛筆式パース + 35mm換算レンズ推定')
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.12 — 自動パース解析 + 改良35mm換算レンズ推定')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
         root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.11 / 構図＋パース＋レンズ'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.12 / 自動パース＋レンズ'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -811,6 +835,9 @@ class MovieShotAnalyzer(QMainWindow):
         self.show_perspective_handles=QCheckBox('操作中の白○を表示'); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_handles)
         self.perspective_pencil=QCheckBox('鉛筆式入力（ドラッグで基準線）'); self.perspective_pencil.setChecked(True); lay.addWidget(self.perspective_pencil)
         self.show_perspective_grid=QCheckBox('画像内パースグリッドを表示'); self.show_perspective_grid.setChecked(True); self.show_perspective_grid.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_grid)
+        auto_row=QHBoxLayout(); self.auto_perspective_btn=QPushButton('自動解析'); self.auto_perspective_btn.setToolTip('画像内の直線を検出し、VP1/VP2/VP3候補・アイレベル・パースライン・レンズを自動推定します。'); self.auto_perspective_btn.clicked.connect(self.auto_analyze_perspective); auto_row.addWidget(self.auto_perspective_btn)
+        self.show_auto_detected_lines=QCheckBox('検出線'); self.show_auto_detected_lines.setToolTip('自動解析が根拠に使った画像内の直線を薄く表示します。'); self.show_auto_detected_lines.setChecked(False); self.show_auto_detected_lines.toggled.connect(self.refresh); auto_row.addWidget(self.show_auto_detected_lines); lay.addLayout(auto_row)
+        self.auto_analysis_label=QLabel('自動解析：未実行'); self.auto_analysis_label.setObjectName('note'); self.auto_analysis_label.setWordWrap(True); lay.addWidget(self.auto_analysis_label)
         self.section(lay,'消失点')
         axisrow=QHBoxLayout(); self.axis_buttons={}
         tips={
@@ -834,10 +861,13 @@ class MovieShotAnalyzer(QMainWindow):
             col=QPushButton('色'); col.setFixedWidth(42); col.clicked.connect(lambda checked=False,k=key:self.choose_vp_ray_color(k)); row.addWidget(col); self.vp_ray_color_buttons[key]=col
             lay.addLayout(row)
         self._update_vp_color_buttons()
+        self.section(lay,'レンズ推定（35mm換算）')
+        self.persp_lens=QLabel('VP1 と VP2 を確定すると推定を開始します。'); self.persp_lens.setObjectName('fileLabel'); self.persp_lens.setWordWrap(True); lay.addWidget(self.persp_lens)
+        self.persp_lens_detail=QLabel('2点透視を主推定、VP3は検証として使用します。'); self.persp_lens_detail.setObjectName('note'); self.persp_lens_detail.setWordWrap(True); lay.addWidget(self.persp_lens_detail)
         self.section(lay,'表示')
         row=QHBoxLayout(); row.addWidget(QLabel('作業領域')); self.workspace_scale=QSlider(Qt.Orientation.Horizontal); self.workspace_scale.setRange(100,400); self.workspace_scale.setValue(100); self.workspace_scale.valueChanged.connect(self.refresh); row.addWidget(self.workspace_scale,1); self.workspace_label=QLabel('100%'); self.workspace_label.setFixedWidth(46); self.workspace_scale.valueChanged.connect(lambda v:self.workspace_label.setText(f'{v}%')); row.addWidget(self.workspace_label); lay.addLayout(row)
         row=QHBoxLayout(); row.addWidget(QLabel('ホイールズーム')); self.zoom_label=QLabel('100%'); row.addWidget(self.zoom_label); zreset=QPushButton('100%'); zreset.clicked.connect(self.reset_zoom); row.addWidget(zreset); lay.addLayout(row)
-        lay.addStretch(1); self.right_tabs.addTab(tab,'パース')
+        lay.addStretch(1); self.right_tabs.addTab(tab,'パース・レンズ')
 
     def _build_composition_tab(self):
         tab=QWidget(); outer=QVBoxLayout(tab); outer.setContentsMargins(0,0,0,0)
@@ -875,9 +905,8 @@ class MovieShotAnalyzer(QMainWindow):
         tab=QWidget(); lay=QVBoxLayout(tab); lay.setContentsMargins(10,10,10,10); lay.setSpacing(8)
         self.section(lay,'ショット分析')
         self.analysis_summary=QLabel('構図・パース・レンズの結果を現在の1カットについてまとめます。'); self.analysis_summary.setObjectName('fileLabel'); self.analysis_summary.setWordWrap(True); lay.addWidget(self.analysis_summary)
-        self.section(lay,'レンズ推定（35mm換算）')
-        self.analysis_lens=QLabel('VP1 と VP2 を確定すると推定を開始します。'); self.analysis_lens.setObjectName('fileLabel'); self.analysis_lens.setWordWrap(True); lay.addWidget(self.analysis_lens)
-        self.lens_detail=QLabel('前提：主点は画面中心、画素は正方形、VP1/VP2 は実空間で直交する方向として計算します。'); self.lens_detail.setObjectName('note'); self.lens_detail.setWordWrap(True); lay.addWidget(self.lens_detail)
+        self.analysis_lens=QLabel('レンズ推定は「パース・レンズ」タブに統合しました。'); self.analysis_lens.setObjectName('note'); self.analysis_lens.setWordWrap(True); lay.addWidget(self.analysis_lens)
+        self.lens_detail=QLabel(''); self.lens_detail.setObjectName('note'); self.lens_detail.setWordWrap(True); self.lens_detail.setVisible(False); lay.addWidget(self.lens_detail)
         self.section(lay,'パース結果')
         self.analysis_perspective=QLabel('VP1 / VP2 / VP3 / Eye Level'); self.analysis_perspective.setObjectName('note'); self.analysis_perspective.setWordWrap(True); lay.addWidget(self.analysis_perspective)
         self.section(lay,'構図タイプ候補')
@@ -994,6 +1023,10 @@ class MovieShotAnalyzer(QMainWindow):
             self.perspective_lines=copy.deepcopy(pd.get('lines',self.default_perspective_lines()))
             saved_complete=pd.get('complete',{})
             self._persp_axis_complete={k:bool(saved_complete.get(k,False)) for k in ('vp1','vp2','vp3')}
+            self.auto_detected_lines=list(pd.get('auto_lines',[])); self.auto_analysis_quality=pd.get('auto_quality',None); self.auto_analysis_note=str(pd.get('auto_note',''))
+            if hasattr(self,'auto_analysis_label'):
+                if self.auto_analysis_quality is None: self.auto_analysis_label.setText('自動解析：未実行')
+                else: self.auto_analysis_label.setText(f'自動解析：信頼度 {self.auto_analysis_quality:.0f}%'+(f' / {self.auto_analysis_note}' if self.auto_analysis_note else ''))
             self._persp_anchor_touched={}
             self.active_perspective_axis='vp1'; self.perspective_step=1 if self._persp_axis_complete.get('vp1',False) else 0
             self.update_perspective_panel_state(); self.update_perspective_labels()
@@ -1030,6 +1063,201 @@ class MovieShotAnalyzer(QMainWindow):
             'vp2': [[(.54,.43),(.84,.34)],[(.54,.59),(.84,.72)]],
             'vp3': [[(.36,.78),(.43,.30)],[(.64,.78),(.57,.30)]],
         }
+    def _frame_bbox_norm(self):
+        xs=[q[0] for q in self.frame_quad]; ys=[q[1] for q in self.frame_quad]
+        return (max(0.0,min(xs)),max(0.0,min(ys)),min(1.0,max(xs)),min(1.0,max(ys)))
+
+    def _detect_segments_cv(self):
+        """Detect long line segments and return normalized endpoints + length."""
+        if self.original is None or cv2 is None or np is None:
+            return []
+        rgb=np.asarray(self.original.convert('RGB'))
+        h0,w0=rgb.shape[:2]
+        l,t,r,b=self._frame_bbox_norm()
+        x0=max(0,min(w0-1,int(round(l*w0)))); y0=max(0,min(h0-1,int(round(t*h0))))
+        x1=max(x0+2,min(w0,int(round(r*w0)))); y1=max(y0+2,min(h0,int(round(b*h0))))
+        crop=rgb[y0:y1,x0:x1]
+        if crop.size==0:return []
+        ch,cw=crop.shape[:2]
+        scale=min(1.0,1200.0/max(ch,cw))
+        if scale<1.0:
+            crop=cv2.resize(crop,(max(2,int(cw*scale)),max(2,int(ch*scale))),interpolation=cv2.INTER_AREA)
+        gray=cv2.cvtColor(crop,cv2.COLOR_RGB2GRAY)
+        gray=cv2.GaussianBlur(gray,(5,5),0)
+        med=float(np.median(gray)); low=int(max(20,0.66*med)); high=int(min(240,max(low+30,1.33*med)))
+        edges=cv2.Canny(gray,low,high,L2gradient=True)
+        hh,ww=edges.shape[:2]; diag=math.hypot(ww,hh)
+        raw=cv2.HoughLinesP(edges,1,np.pi/360,threshold=max(28,int(diag*0.035)),minLineLength=max(24,int(diag*0.045)),maxLineGap=max(8,int(diag*0.012)))
+        if raw is None:return []
+        out=[]
+        invs=1.0/scale
+        for ln in raw[:,0,:]:
+            xa,ya,xb,yb=[float(v) for v in ln]
+            length=math.hypot(xb-xa,yb-ya)
+            if length<diag*0.04: continue
+            xa=xa*invs+x0; xb=xb*invs+x0; ya=ya*invs+y0; yb=yb*invs+y0
+            a=(xa/w0,ya/h0); bb=(xb/w0,yb/h0)
+            # Ignore near-frame-border detections; black bars and the green frame can dominate otherwise.
+            mx=(a[0]+bb[0])*0.5; my=(a[1]+bb[1])*0.5
+            out.append({'a':a,'b':bb,'length':length/diag,'mid':(mx,my)})
+        out.sort(key=lambda z:z['length'],reverse=True)
+        # Hough often returns duplicates. Remove almost-collinear, nearby duplicates.
+        ded=[]
+        for seg in out:
+            ax,ay=seg['a']; bx,by=seg['b']; ang=math.atan2(by-ay,bx-ax)%math.pi
+            keep=True
+            for prev in ded[-50:]:
+                pax,pay=prev['a']; pbx,pby=prev['b']; pang=math.atan2(pby-pay,pbx-pax)%math.pi
+                da=abs(ang-pang); da=min(da,math.pi-da)
+                dm=math.hypot(seg['mid'][0]-prev['mid'][0],seg['mid'][1]-prev['mid'][1])
+                if da<math.radians(1.2) and dm<0.025:
+                    keep=False; break
+            if keep: ded.append(seg)
+            if len(ded)>=110: break
+        return ded
+
+    def _vp_candidate_score(self,vp,segments):
+        vx,vy=vp; support=[]; score=0.0; errs=[]
+        for i,s in enumerate(segments):
+            mx,my=s['mid']; dx=s['b'][0]-s['a'][0]; dy=s['b'][1]-s['a'][1]
+            dl=math.hypot(dx,dy); rx=vx-mx; ry=vy-my; rl=math.hypot(rx,ry)
+            if dl<1e-8 or rl<1e-8: continue
+            err=abs(dx*ry-dy*rx)/(dl*rl)  # sin angular residual
+            # ~2.3 degrees. Longer segments carry more weight.
+            if err<0.040:
+                w=s['length']*(1.0-err/0.040)
+                score+=w; support.append(i); errs.append(err)
+        if len(support)<2:return (0.0,[],1.0)
+        # Reward spatially distributed support rather than several duplicate edges from one object.
+        mids=[segments[i]['mid'] for i in support]
+        spread=0.0
+        for i in range(min(len(mids),12)):
+            for j in range(i+1,min(len(mids),12)):
+                spread=max(spread,math.hypot(mids[i][0]-mids[j][0],mids[i][1]-mids[j][1]))
+        score*=0.65+min(0.7,spread)
+        return (score,support,sum(errs)/len(errs))
+
+    def _find_vp_clusters(self,segments,max_clusters=3):
+        if len(segments)<4:return []
+        remaining=list(range(len(segments))); clusters=[]
+        for _ in range(max_clusters):
+            pool=[segments[i] for i in remaining]
+            if len(pool)<2:break
+            candidates=[]
+            n=min(len(pool),85)
+            for i in range(n):
+                a=pool[i]
+                adx=a['b'][0]-a['a'][0]; ady=a['b'][1]-a['a'][1]; al=math.hypot(adx,ady)
+                for j in range(i+1,n):
+                    b=pool[j]
+                    bdx=b['b'][0]-b['a'][0]; bdy=b['b'][1]-b['a'][1]; bl=math.hypot(bdx,bdy)
+                    if al<1e-9 or bl<1e-9:continue
+                    sine=abs(adx*bdy-ady*bdx)/(al*bl)
+                    if sine<math.sin(math.radians(5.0)):continue
+                    ip=infinite_line_intersection(a['a'],a['b'],b['a'],b['b'])
+                    if ip is None:continue
+                    if not (-8.0<=ip[0]<=9.0 and -7.0<=ip[1]<=8.0):continue
+                    candidates.append(ip)
+            if not candidates:break
+            if len(candidates)>700:
+                step=max(1,len(candidates)//700); candidates=candidates[::step][:700]
+            best=None
+            for vp in candidates:
+                sc,supp,err=self._vp_candidate_score(vp,pool)
+                if best is None or sc>best[0]: best=(sc,vp,supp,err)
+            if best is None or len(best[2])<2:break
+            sc,vp,supp,err=best
+            global_support=[remaining[k] for k in supp]
+            if sc<0.055:break
+            # Orientation descriptor used to identify the vertical family.
+            angs=[]
+            for gi in global_support:
+                ss=segments[gi]; dx=ss['b'][0]-ss['a'][0]; dy=ss['b'][1]-ss['a'][1]
+                angs.append(abs(math.degrees(math.atan2(dy,dx)))%180)
+            vertdev=min(abs(a-90.0) for a in angs) if angs else 90.0
+            medvert=sorted([abs(a-90.0) for a in angs])[len(angs)//2] if angs else 90.0
+            clusters.append({'vp':vp,'support':global_support,'score':sc,'err':err,'vertical_dev':medvert})
+            remset=set(global_support); remaining=[gi for gi in remaining if gi not in remset]
+        return clusters
+
+    def _choose_two_support_lines(self,cluster,segments):
+        ids=cluster['support']
+        if not ids:return None
+        ranked=sorted(ids,key=lambda i:segments[i]['length'],reverse=True)
+        first=ranked[0]; second=None
+        m0=segments[first]['mid']
+        for i in ranked[1:]:
+            if math.hypot(segments[i]['mid'][0]-m0[0],segments[i]['mid'][1]-m0[1])>0.10:
+                second=i; break
+        if second is None and len(ranked)>1: second=ranked[1]
+        if second is None:return None
+        def line(i):
+            s=segments[i]; return [tuple(s['a']),tuple(s['b'])]
+        return [line(first),line(second)]
+
+    def auto_analyze_perspective(self):
+        """Automatic VP proposal. Results remain editable with the existing pencil/anchor UI."""
+        if self.original is None:
+            self.statusBar().showMessage('先に画像を開いてください。',4000); return
+        if cv2 is None or np is None:
+            self.statusBar().showMessage('自動解析には OpenCV / NumPy が必要です。requirements.txt から再ビルドしてください。',7000); return
+        self.statusBar().showMessage('自動パース解析中…')
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            segments=self._detect_segments_cv()
+            clusters=self._find_vp_clusters(segments,3)
+            if len(clusters)<2:
+                self.auto_detected_lines=[]; self.auto_analysis_quality=0.0; self.auto_analysis_note='十分な直線を検出できませんでした'
+                self.auto_analysis_label.setText('自動解析：失敗 / 直線の多い背景で再試行してください')
+                self.statusBar().showMessage('自動解析：VP候補を2方向以上検出できませんでした。手動入力を使用してください。',7000); self.refresh(); return
+            # Pick a vertical family only when its supporting edges are convincingly vertical.
+            clusters=sorted(clusters,key=lambda c:c['score'],reverse=True)
+            vertical=None
+            vertical_candidates=sorted(clusters,key=lambda c:c['vertical_dev'])
+            if vertical_candidates and vertical_candidates[0]['vertical_dev']<24.0:
+                vertical=vertical_candidates[0]
+            horizontal=[c for c in clusters if c is not vertical]
+            if len(horizontal)<2:
+                horizontal=clusters[:2]; vertical=clusters[2] if len(clusters)>2 else None
+            horizontal=sorted(horizontal[:2],key=lambda c:c['vp'][0])
+            assigned={'vp1':horizontal[0],'vp2':horizontal[1]}
+            if vertical is not None and vertical not in horizontal: assigned['vp3']=vertical
+            self.auto_detected_lines=[]
+            qualities=[]
+            for key in ('vp1','vp2','vp3'):
+                c=assigned.get(key)
+                if c is None:
+                    self._persp_axis_complete[key]=False; continue
+                lines=self._choose_two_support_lines(c,segments)
+                if lines is None:
+                    self._persp_axis_complete[key]=False; continue
+                self.perspective_lines[key]=lines
+                ip=infinite_line_intersection(lines[0][0],lines[0][1],lines[1][0],lines[1][1]) or c['vp']
+                ip=(max(-6.0,min(7.0,ip[0])),max(-5.0,min(6.0,ip[1])))
+                if key=='vp1': self.vp1=ip
+                elif key=='vp2': self.vp2=ip
+                else: self.vp3=ip
+                self._persp_axis_complete[key]=True
+                self._persp_anchor_touched[(key,0)]={0,1}; self._persp_anchor_touched[(key,1)]={0,1}
+                for gi in c['support']:
+                    ss=segments[gi]; self.auto_detected_lines.append((key,tuple(ss['a']),tuple(ss['b'])))
+                # Map score/support/error into a deliberately conservative percentage.
+                q=min(96.0,35.0+len(c['support'])*5.0+min(25.0,c['score']*45.0)-c['err']*250.0); qualities.append(q)
+            if self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2'):
+                x1,y1=self.vp1; x2,y2=self.vp2
+                self.eye_level_y=(y1+y2)/2.0 if abs(x2-x1)<1e-9 else y1+(0.5-x1)*(y2-y1)/(x2-x1)
+            self.active_perspective_axis='vp3' if self._persp_axis_complete.get('vp3') else 'vp2'; self.perspective_step=1
+            self.auto_analysis_quality=sum(qualities)/len(qualities) if qualities else 0.0
+            axes=sum(1 for k in ('vp1','vp2','vp3') if self._persp_axis_complete.get(k))
+            self.auto_analysis_note=f'{axes}方向 / 検出線 {len(self.auto_detected_lines)}本'
+            self.auto_analysis_label.setText(f'自動解析：信頼度 {self.auto_analysis_quality:.0f}% / {self.auto_analysis_note}')
+            self.update_perspective_panel_state(); self.update_perspective_labels(); self.save_perspective(); self.refresh()
+            self.statusBar().showMessage('自動解析完了。放射線と画像内グリッドを生成しました。必要なら白○または鉛筆入力で修正してください。',7000)
+        except Exception as ex:
+            self.statusBar().showMessage(f'自動解析でエラー: {ex}',9000)
+        finally:
+            QApplication.restoreOverrideCursor()
+
     def solve_perspective_axis(self,name):
         lines=self.perspective_lines.get(name,[])
         if len(lines)<2:return
@@ -1056,11 +1284,13 @@ class MovieShotAnalyzer(QMainWindow):
     def save_perspective(self):
         if 0<=self.current_index<len(self.paths):
             import copy
-            self.perspective_by_image[str(self.paths[self.current_index])]={'vp1':tuple(self.vp1),'vp2':tuple(self.vp2),'vp3':tuple(self.vp3),'eye':float(self.eye_level_y),'lines':copy.deepcopy(self.perspective_lines),'complete':dict(self._persp_axis_complete)}
+            self.perspective_by_image[str(self.paths[self.current_index])]={'vp1':tuple(self.vp1),'vp2':tuple(self.vp2),'vp3':tuple(self.vp3),'eye':float(self.eye_level_y),'lines':copy.deepcopy(self.perspective_lines),'complete':dict(self._persp_axis_complete),'auto_lines':copy.deepcopy(self.auto_detected_lines),'auto_quality':self.auto_analysis_quality,'auto_note':self.auto_analysis_note}
     def reset_perspective(self):
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
         self.active_perspective_axis='vp1'; self.perspective_step=0
         self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}; self.show_perspective_grid_default=True
+        self.auto_detected_lines=[]; self.auto_analysis_quality=None; self.auto_analysis_note=''
+        if hasattr(self,'auto_analysis_label'): self.auto_analysis_label.setText('自動解析：未実行')
         self.perspective_lines=self.default_perspective_lines()
         self.perspective_step=0; self.update_perspective_panel_state(); self.update_perspective_labels(); self.save_perspective(); self.refresh()
     def update_perspective_labels(self):
@@ -1084,73 +1314,105 @@ class MovieShotAnalyzer(QMainWindow):
         return math.sqrt(f2)
 
     def estimate_lens(self):
-        """Return a conservative 35mm-equivalent lens estimate from solved vanishing points."""
+        """Robust 35mm-equivalent estimate: VP1×VP2 is primary; VP3 validates rather than dominates."""
         if self.original is None:
             return None
         complete=self._persp_axis_complete
         pairs=[]
-        if complete.get('vp1') and complete.get('vp2'):
-            pairs.append(('VP1×VP2', self._pair_focal_pixels(self.vp1,self.vp2)))
-        if complete.get('vp1') and complete.get('vp3'):
-            pairs.append(('VP1×VP3', self._pair_focal_pixels(self.vp1,self.vp3)))
-        if complete.get('vp2') and complete.get('vp3'):
-            pairs.append(('VP2×VP3', self._pair_focal_pixels(self.vp2,self.vp3)))
-        vals=[v for _,v in pairs if v is not None and math.isfinite(v)]
-        if not vals:
+        pair_map={}
+        for label,a,b,key in [
+            ('VP1×VP2',self.vp1,self.vp2,'base'),
+            ('VP1×VP3',self.vp1,self.vp3,'v13'),
+            ('VP2×VP3',self.vp2,self.vp3,'v23')]:
+            needed = (key=='base' and complete.get('vp1') and complete.get('vp2')) or (key=='v13' and complete.get('vp1') and complete.get('vp3')) or (key=='v23' and complete.get('vp2') and complete.get('vp3'))
+            if needed:
+                val=self._pair_focal_pixels(a,b); pairs.append((label,val)); pair_map[key]=val
+        base=pair_map.get('base')
+        if base is None or not math.isfinite(base):
             return None
-        vals_sorted=sorted(vals)
-        fpx=vals_sorted[len(vals_sorted)//2] if len(vals_sorted)%2 else 0.5*(vals_sorted[len(vals_sorted)//2-1]+vals_sorted[len(vals_sorted)//2])
         w=float(self.original.width); h=float(self.original.height)
+        base35=36.0*base/w
+        validations=[]
+        for k in ('v13','v23'):
+            v=pair_map.get(k)
+            if v is not None and math.isfinite(v): validations.append(v)
+        # VP3 is a consistency check. Only validation estimates reasonably close to the
+        # horizontal solution influence the final focal length; severe outliers are reported,
+        # not averaged into the answer.
+        accepted=[v for v in validations if abs(v-base)/max(base,1e-6) <= 0.38]
+        if accepted:
+            vmed=sorted(accepted)[len(accepted)//2]
+            fpx=0.72*base+0.28*vmed
+        else:
+            fpx=base
+        eq35=36.0*fpx/w
         hfov=math.degrees(2.0*math.atan(w/(2.0*fpx)))
         vfov=math.degrees(2.0*math.atan(h/(2.0*fpx)))
-        eq35=36.0*fpx/w
-        # Internal consistency of VP-pair focal estimates is a useful confidence proxy.
-        if len(vals)>=2:
-            mean=sum(vals)/len(vals)
-            spread=(max(vals)-min(vals))/max(mean,1e-6)
+        discrepancies=[abs(v-base)/max(base,1e-6) for v in validations]
+        validation_spread=max(discrepancies) if discrepancies else None
+        autoq=self.auto_analysis_quality if self.auto_analysis_quality is not None else None
+        if validations:
+            close=sum(1 for d in discrepancies if d<0.18)
+            if close==len(validations) and max(discrepancies)<0.18:
+                confidence='高'; margin=0.14; reason='VP1/VP2とVP3検証がよく一致'
+            elif any(d<0.30 for d in discrepancies):
+                confidence='中'; margin=0.22; reason='水平VPは安定、VP3検証に一部差'
+            else:
+                confidence='低'; margin=0.32; reason='VP3との整合が低いため水平VPを優先'
         else:
-            spread=0.35
-        # Penalize implausibly extreme estimates and incomplete VP3 calibration.
-        if len(vals)>=3 and spread < 0.12:
-            confidence='高'; margin=0.12
-        elif spread < 0.28:
-            confidence='中'; margin=0.22
-        else:
-            confidence='低'; margin=0.35
+            confidence='中'; margin=0.24; reason='VP1/VP2による2点透視推定'
+        if autoq is not None:
+            if autoq<45:
+                confidence='低'; margin=max(margin,0.34); reason+=' / 自動検出信頼度が低い'
+            elif autoq>=78 and confidence=='中':
+                reason+=' / 自動検出は比較的安定'
         lo=max(4.0,eq35*(1.0-margin)); hi=eq35*(1.0+margin)
         if eq35 < 20: kind='超広角'
         elif eq35 < 35: kind='広角'
         elif eq35 < 60: kind='標準'
         elif eq35 < 100: kind='中望遠'
         else: kind='望遠'
-        return {'eq35':eq35,'lo':lo,'hi':hi,'hfov':hfov,'vfov':vfov,'kind':kind,'confidence':confidence,'pairs':pairs,'spread':spread}
+        common=[12,14,16,18,20,21,24,28,32,35,40,50,58,65,85,100,135,200]
+        candidates=sorted(common,key=lambda mm:abs(math.log(max(mm,1)/max(eq35,1))))[:3]
+        candidates=sorted(candidates)
+        return {'eq35':eq35,'base35':base35,'lo':lo,'hi':hi,'hfov':hfov,'vfov':vfov,'kind':kind,'confidence':confidence,'pairs':pairs,'spread':validation_spread,'reason':reason,'candidates':candidates,'autoq':autoq}
 
     def update_lens_estimate(self):
-        if not hasattr(self,'analysis_lens'):
+        targets=[x for x in (getattr(self,'analysis_lens',None),getattr(self,'persp_lens',None)) if x is not None]
+        detail_targets=[x for x in (getattr(self,'lens_detail',None),getattr(self,'persp_lens_detail',None)) if x is not None]
+        if not targets:
             return
         if not (self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2')):
-            self.analysis_lens.setText('VP1 と VP2 を確定すると推定を開始します。')
+            for t in targets: t.setText('VP1 と VP2 を確定すると推定を開始します。')
+            for d in detail_targets: d.setText('2点透視を主推定、VP3は検証として使用します。')
             return
         est=self.estimate_lens()
         if est is None:
-            self.analysis_lens.setText('レンズ推定不可\nVP1/VP2 が直交方向として成立していない可能性があります。基準線を見直してください。')
+            for t in targets: t.setText('レンズ推定不可\nVP1/VP2 が直交方向として成立していない可能性があります。基準線を見直してください。')
             return
-        self.analysis_lens.setText(
+        cand=' / '.join(f'{x}mm' for x in est['candidates'])
+        lens_text=(
             f"推定焦点距離： 約 {est['eq35']:.0f} mm（35mm換算）\n"
-            f"推定範囲： {est['lo']:.0f}–{est['hi']:.0f} mm\n"
+            f"有力レンジ： {est['lo']:.0f}–{est['hi']:.0f} mm\n"
+            f"候補： {cand}\n"
             f"水平画角： 約 {est['hfov']:.1f}°  /  垂直画角： 約 {est['vfov']:.1f}°\n"
             f"レンズ傾向： {est['kind']}  /  信頼度： {est['confidence']}"
         )
+        for t in targets: t.setText(lens_text)
         details=[]
         for label,val in est['pairs']:
             if val is not None:
                 details.append(f"{label}: {36.0*val/max(float(self.original.width),1.0):.1f}mm相当")
         note=' / '.join(details)
-        if self._persp_axis_complete.get('vp3'):
-            note += f"\n3軸整合差: {est['spread']*100:.1f}%"
+        if est['spread'] is not None:
+            note += f"\nVP3検証差: {est['spread']*100:.1f}%"
         else:
-            note += '\nVP3を確定すると3軸の整合性から信頼度を補強できます。'
-        self.lens_detail.setText(note + '\n前提：主点=画面中心・正方画素・直交VP。クロップや誇張パースでは誤差が増えます。')
+            note += '\nVP3を確定すると3点透視として追加検証できます。'
+        if est.get('autoq') is not None:
+            note += f"\n自動パース信頼度: {est['autoq']:.0f}%"
+        note += f"\n判定理由: {est['reason']}"
+        detail_text=note + '\n前提：主点=画面中心・正方画素・直交VP。クロップや誇張パースでは誤差が増えます。'
+        for d in detail_targets: d.setText(detail_text)
 
     def comp_edit_toggled(self,on):
         if not on:
