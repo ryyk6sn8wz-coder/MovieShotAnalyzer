@@ -665,20 +665,6 @@ class ImageCanvas(QWidget):
                     p.drawLine(QPointF(vp.x()-dx,vp.y()-dy),QPointF(vp.x()+dx,vp.y()+dy))
                 p.restore()
 
-        # Optional source-line overlay from automatic detection.  These are not the
-        # perspective grid itself; they show the image edges that supported the solve.
-        if hasattr(self.owner,'show_auto_detected_lines') and self.owner.show_auto_detected_lines.isChecked():
-            p.save(); p.setClipPath(self._frame_clip_path())
-            for item in getattr(self.owner,'auto_detected_lines',[]):
-                try:
-                    key,a0,b0=item[0],item[1],item[2]
-                    col=QColor(self.owner.vp_ray_colors.get(key,'#aab4c0')); col.setAlpha(round(255*self.owner.perspective_alpha.value()/100*0.60))
-                    pen=QPen(col); pen.setWidthF(max(0.5,self.owner.perspective_line_width.value.value()*0.75)); p.setPen(pen)
-                    p.drawLine(self._image_norm_to_point(*a0),self._image_norm_to_point(*b0))
-                except Exception:
-                    pass
-            p.restore()
-
         # Two calibration segments per axis.  Unsolved/inactive axes are fully hidden,
         # and even the active axis shows a segment only after the user actually draws it.
         # This prevents default/template lines appearing before the pencil stroke.
@@ -995,14 +981,6 @@ class ImageCanvas(QWidget):
                     self.owner.solve_perspective_axis(name)
                     self.owner._persp_axis_complete[name]=True
                     self.owner.solve_perspective_axis(name)
-                    # V5.30: collect the user's confirmed manual lines as learning data,
-                    # without letting learning/autodetection touch the manual input engine.
-                    if hasattr(self.owner,'learn_current_perspective'):
-                        try:
-                            self.owner.perspective_source='manual'
-                            self.owner.learn_current_perspective('manual',axes=[name])
-                        except Exception:
-                            pass
                     self.owner.advance_after_axis_complete(name)
                 self.owner.save_perspective(); self.owner.refresh()
             self.drag_item=None; return
@@ -1030,17 +1008,12 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — Perspective Core Test V5.30 Restored V5.11 Manual Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — Pure Manual Perspective V5.30 Restored V5.11 Manual Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
-        self.learning_enabled=True
-        self.learning_data={'version':1,'samples':[],'feature_mean':{'length':0.16,'border':0.25,'vertical':0.25},'count':0}
+        # Pure Manual Perspective: no automatic-analysis data and no learning data
+        # are loaded into the perspective engine. Only the current manual strokes count.
         self.perspective_source='manual'
-        self._load_learning_data()
-        self.auto_detected_lines=[]
-        self.auto_analysis_quality=None
-        self.auto_analysis_note=''
-        self.auto_candidates=[]; self.auto_candidate_index=-1
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
         self.active_perspective_axis='vp1'; self.perspective_step=0; self.vp3_at_infinity=False
         self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}; self.vp3_at_infinity=False; self.show_perspective_grid_default=True
@@ -1134,20 +1107,13 @@ class MovieShotAnalyzer(QMainWindow):
         self.show_perspective_handles=QCheckBox('操作中の白○を表示'); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_handles)
         self.perspective_pencil=QCheckBox('鉛筆式入力（ドラッグで基準線）'); self.perspective_pencil.setChecked(True); lay.addWidget(self.perspective_pencil)
         self.show_perspective_grid=QCheckBox('画像内パースグリッドを表示'); self.show_perspective_grid.setChecked(True); self.show_perspective_grid.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_grid)
-        auto_row=QHBoxLayout(); self.auto_perspective_btn=QPushButton('自動解析'); self.auto_perspective_btn.setToolTip('画像内の直線を検出し、VP1/VP2/VP3候補・アイレベル・パースライン・レンズを自動推定します。'); self.auto_perspective_btn.clicked.connect(self.auto_analyze_perspective); auto_row.addWidget(self.auto_perspective_btn)
-        self.show_auto_detected_lines=QCheckBox('検出線'); self.show_auto_detected_lines.setToolTip('自動解析が根拠に使った画像内の直線を薄く表示します。'); self.show_auto_detected_lines.setChecked(False); self.show_auto_detected_lines.toggled.connect(self.refresh); auto_row.addWidget(self.show_auto_detected_lines); lay.addLayout(auto_row)
-        self.auto_analysis_label=QLabel('自動解析：未実行'); self.auto_analysis_label.setObjectName('note'); self.auto_analysis_label.setWordWrap(True); lay.addWidget(self.auto_analysis_label)
-        cand=QHBoxLayout(); cand.addWidget(QLabel('候補')); self.auto_candidate_buttons=[]
-        for i,name in enumerate(('A','B','C')):
-            cb=QPushButton(name); cb.setCheckable(True); cb.setEnabled(False); cb.clicked.connect(lambda checked=False,n=i:self.apply_auto_candidate(n)); cand.addWidget(cb); self.auto_candidate_buttons.append(cb)
-        lay.addLayout(cand)
-        self.section(lay,'消失点')
+        self.section(lay,'手動パース')
         axisrow=QHBoxLayout(); self.axis_buttons={}
         tips={
             'vp1':'VP1を設定。1本目をドラッグで引き、続けて2本目もドラッグで引くとVPを確定します。',
             'vp2':'VP2を設定。別方向の平行エッジ2本から消失点を求めます。',
             'vp3':'VP3を設定。主に垂直方向の収束を2本の線から求めます。'}
-        for key,label in [('vp1','VP1'),('vp2','VP2'),('vp3','VP3')]:
+        for key,label in [('vp1','X / VP1'),('vp2','Z / VP2'),('vp3','Y / VP3')]:
             b=QPushButton(label); b.setCheckable(True); b.setToolTip(tips[key]); b.clicked.connect(lambda checked,k=key:self.set_perspective_axis(k)); axisrow.addWidget(b); self.axis_buttons[key]=b
         lay.addLayout(axisrow)
         self.persp_step_label=QLabel('1本目：画像上をドラッグして引く'); self.persp_step_label.setObjectName('fileLabel'); lay.addWidget(self.persp_step_label)
@@ -1166,10 +1132,6 @@ class MovieShotAnalyzer(QMainWindow):
         self._update_vp_color_buttons()
         row=QHBoxLayout(); row.addWidget(QLabel('パース線の太さ')); self.perspective_line_width=StepControl(0.5,5.0,0.5,0.5); self.perspective_line_width.value.valueChanged.connect(self.refresh); row.addWidget(self.perspective_line_width); lay.addLayout(row)
         row=QHBoxLayout(); row.addWidget(QLabel('パース線の透明度')); self.perspective_alpha=QSlider(Qt.Orientation.Horizontal); self.perspective_alpha.setRange(0,100); self.perspective_alpha.setValue(70); self.perspective_alpha.valueChanged.connect(self.refresh); row.addWidget(self.perspective_alpha,1); self.perspective_alpha_label=QLabel('70%'); self.perspective_alpha_label.setFixedWidth(42); self.perspective_alpha.valueChanged.connect(lambda v:self.perspective_alpha_label.setText(f'{v}%')); row.addWidget(self.perspective_alpha_label); lay.addLayout(row)
-        self.section(lay,'学習')
-        self.learning_check=QCheckBox('手動・修正パースを学習に使用'); self.learning_check.setChecked(True); self.learning_check.toggled.connect(self.set_learning_enabled); lay.addWidget(self.learning_check)
-        self.learning_label=QLabel(f'学習データ：{self.learning_data.get("count",0)}件'); self.learning_label.setObjectName('note'); lay.addWidget(self.learning_label)
-        lr=QHBoxLayout(); learn_now=QPushButton('現在の手動パースを学習'); learn_now.clicked.connect(lambda:self.learn_current_perspective('manual')); lr.addWidget(learn_now); reset_learn=QPushButton('学習をリセット'); reset_learn.clicked.connect(self.reset_learning_data); lr.addWidget(reset_learn); lay.addLayout(lr)
         self.section(lay,'レンズ推定（35mm換算）')
         self.persp_lens=QLabel('VP1 と VP2 を確定すると推定を開始します。'); self.persp_lens.setObjectName('fileLabel'); self.persp_lens.setWordWrap(True); lay.addWidget(self.persp_lens)
         self.persp_lens_detail=QLabel('2点透視を主推定、VP3は検証として使用します。'); self.persp_lens_detail.setObjectName('note'); self.persp_lens_detail.setWordWrap(True); lay.addWidget(self.persp_lens_detail)
@@ -2255,7 +2217,11 @@ class MovieShotAnalyzer(QMainWindow):
             # - almost parallel by itself => infinity
             # - or both strokes clearly represent vertical architecture and differ
             #   by less than 10 degrees => infinity
-            if delta < 4.0 or (max(v1,v2) < 14.0 and delta < 10.0):
+            # For layout work, weakly converging architectural verticals should stay
+            # parallel rather than manufacture a false nearby VP3.
+            # If both strokes are recognisably vertical and their mutual angle is modest,
+            # classify Y as an infinite vanishing point.
+            if delta < 5.0 or (max(v1,v2) < 25.0 and delta < 15.0):
                 self.vp3_at_infinity=True
                 self.update_perspective_labels()
                 if hasattr(self,'canvas'):
@@ -2302,17 +2268,37 @@ class MovieShotAnalyzer(QMainWindow):
         if hasattr(self,'zoom_label'): self.zoom_label.setText(f'{round(self.view_zoom*100):d}%')
 
     def save_perspective(self):
+        """Store only manually created perspective state for this image."""
         if 0<=self.current_index<len(self.paths):
             import copy
-            self.perspective_by_image[str(self.paths[self.current_index])]={'vp1':tuple(self.vp1),'vp2':tuple(self.vp2),'vp3':tuple(self.vp3),'eye':float(self.eye_level_y),'lines':copy.deepcopy(self.perspective_lines),'complete':dict(self._persp_axis_complete),'auto_lines':copy.deepcopy(self.auto_detected_lines),'auto_quality':self.auto_analysis_quality,'auto_note':self.auto_analysis_note}
+            self.perspective_by_image[str(self.paths[self.current_index])]={
+                'vp1':tuple(self.vp1),
+                'vp2':tuple(self.vp2),
+                'vp3':tuple(self.vp3),
+                'eye':float(self.eye_level_y),
+                'lines':copy.deepcopy(self.perspective_lines),
+                'complete':dict(self._persp_axis_complete),
+                'vp3_at_infinity':bool(getattr(self,'vp3_at_infinity',False)),
+            }
+
     def reset_perspective(self):
-        self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
-        self.active_perspective_axis='vp1'; self.perspective_step=0
-        self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}; self.vp3_at_infinity=False; self.show_perspective_grid_default=True
-        self.auto_detected_lines=[]; self.auto_analysis_quality=None; self.auto_analysis_note=''
-        if hasattr(self,'auto_analysis_label'): self.auto_analysis_label.setText('自動解析：未実行')
+        self.vp1=(-0.30,0.50)
+        self.vp2=(1.30,0.50)
+        self.vp3=(0.50,-0.65)
+        self.eye_level_y=0.50
+        self.view_zoom=1.0
+        self.active_perspective_axis='vp1'
+        self.perspective_step=0
+        self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}
+        self._persp_anchor_touched={}
+        self.vp3_at_infinity=False
+        self.show_perspective_grid_default=True
         self.perspective_lines=self.default_perspective_lines()
-        self.perspective_step=0; self.update_perspective_panel_state(); self.update_perspective_labels(); self.save_perspective(); self.refresh()
+        self.update_perspective_panel_state()
+        self.update_perspective_labels()
+        self.save_perspective()
+        self.refresh()
+
     def update_perspective_labels(self):
         dx=(self.vp2[0]-self.vp1[0])*(self.original.width if self.original is not None else 1)
         dy=(self.vp2[1]-self.vp1[1])*(self.original.height if self.original is not None else 1)
@@ -2373,7 +2359,7 @@ class MovieShotAnalyzer(QMainWindow):
         vfov=math.degrees(2.0*math.atan(h/(2.0*fpx)))
         discrepancies=[abs(v-base)/max(base,1e-6) for v in validations]
         validation_spread=max(discrepancies) if discrepancies else None
-        autoq=self.auto_analysis_quality if self.auto_analysis_quality is not None else None
+        autoq=None
         if validations:
             close=sum(1 for d in discrepancies if d<0.18)
             if close==len(validations) and max(discrepancies)<0.18:
