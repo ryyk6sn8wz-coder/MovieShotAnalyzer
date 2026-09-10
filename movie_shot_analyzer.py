@@ -555,13 +555,66 @@ class ImageCanvas(QWidget):
         # (VP1 + VP2) are both solved.  This keeps the canvas clean while calibrating.
         base_pair_ready=(self.owner._persp_axis_complete.get('vp1',False)
                          and self.owner._persp_axis_complete.get('vp2',False))
+        # VP3 at infinity: draw a parallel Y family from the user's calibration
+        # strokes.  This is deliberately independent of Camera Solver logic.
+        if (base_pair_ready and self.owner._persp_axis_complete.get('vp3',False)
+                and getattr(self.owner,'vp3_at_infinity',False)
+                and self.owner.vp_ray_visible.get('vp3',True)):
+            lines=self.owner.perspective_lines.get('vp3',[])
+            if len(lines)>=2:
+                w=max(1.0,float(self.owner.original.width))
+                h=max(1.0,float(self.owner.original.height))
+
+                dirs=[]
+                for ln in lines[:2]:
+                    dx=(ln[1][0]-ln[0][0])*w
+                    dy=(ln[1][1]-ln[0][1])*h
+                    n=math.hypot(dx,dy)
+                    if n>1e-9:
+                        # Orient consistently upward/downward before averaging.
+                        if dy<0:
+                            dx=-dx; dy=-dy
+                        dirs.append((dx/n,dy/n))
+
+                if dirs:
+                    sx=sum(d[0] for d in dirs); sy=sum(d[1] for d in dirs)
+                    n=max(1e-9,math.hypot(sx,sy))
+                    ux,uy=sx/n,sy/n
+
+                    # If the user's average is extremely close to screen vertical,
+                    # snap only that tiny hand jitter; otherwise preserve camera roll.
+                    off_vertical=math.degrees(math.acos(max(0.0,min(1.0,abs(uy)))))
+                    if off_vertical < 2.0:
+                        ux,uy=0.0,1.0
+
+                    nx,ny=-uy,ux
+                    r=self.image_rect
+                    corners=[QPointF(r.left(),r.top()),QPointF(r.right(),r.top()),
+                             QPointF(r.right(),r.bottom()),QPointF(r.left(),r.bottom())]
+                    projs=[c.x()*nx+c.y()*ny for c in corners]
+                    lo,hi=min(projs),max(projs)
+                    count=max(2,int(self.owner.vp_ray_counts.get('vp3',12)))
+                    col=QColor(self.owner.vp_ray_colors['vp3'])
+                    col.setAlpha(round(255*self.owner.perspective_alpha.value()/100))
+                    pen=QPen(col); pen.setWidthF(self.owner.perspective_line_width.value.value())
+                    p.setPen(pen)
+                    radius=max(r.width(),r.height())*4.0
+                    for i in range(count):
+                        t=lo+(hi-lo)*(i+0.5)/count
+                        cx=nx*t; cy=ny*t
+                        p.drawLine(QPointF(cx-ux*radius,cy-uy*radius),
+                                   QPointF(cx+ux*radius,cy+uy*radius))
+
         for label,xy,color,key in vp_defs:
             ready = base_pair_ready and (key in ('vp1','vp2') or (self.owner._persp_axis_complete.get('vp3',False) and not getattr(self.owner,'vp3_at_infinity',False)))
             if not ready or not self.owner.vp_ray_visible.get(key,True):
                 continue
             vp=self._image_norm_to_point(*xy); count=max(2,int(self.owner.vp_ray_counts.get(key,12)))
             rc=QColor(color); rc.setAlpha(round(255*self.owner.perspective_alpha.value()/100)); rp=QPen(rc); rp.setWidthF(self.owner.perspective_line_width.value.value()); p.setPen(rp)
-            radius=20000.0
+            # Radius must reach the image even when the true VP is very far away.
+            # This preserves the user's calibration direction without clamping the VP.
+            center=self.image_rect.center()
+            radius=max(20000.0, math.hypot(vp.x()-center.x(),vp.y()-center.y())*2.5 + 2000.0)
 
             # Aim the fan through the actual image rectangle.  If a VP is far outside
             # the image, a uniform 180-degree fan leaves most rays missing the picture.
@@ -658,6 +711,8 @@ class ImageCanvas(QWidget):
         # solved VP markers only; unsolved defaults stay invisible.
         for label,xy,color,key in vp_defs:
             if not self.owner._persp_axis_complete.get(key,False):
+                continue
+            if key=='vp3' and getattr(self.owner,'vp3_at_infinity',False):
                 continue
             vp=self._image_norm_to_point(*xy); c=QColor(color); c.setAlpha(245); p.setBrush(c); p.setPen(Qt.PenStyle.NoPen); p.drawEllipse(QRectF(vp.x()-7,vp.y()-7,14,14))
             p.setPen(QColor('#f5f7fa')); p.drawText(QRectF(vp.x()+10,vp.y()-12,58,24),Qt.AlignmentFlag.AlignVCenter,label)
@@ -975,7 +1030,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — V5.30 Perspective Baseline V5.30 Restored V5.11 Manual Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — Perspective Core Test V5.30 Restored V5.11 Manual Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -2152,36 +2207,93 @@ class MovieShotAnalyzer(QMainWindow):
             QApplication.restoreOverrideCursor()
 
     def solve_perspective_axis(self,name):
+        """Solve one manual axis without altering the user's two calibration strokes.
+
+        V5.30 input behavior is preserved.  The important change is geometric:
+        far vanishing points are no longer clamped to an arbitrary box, because that
+        moves the VP away from the user's lines and makes the generated rays wrong.
+        """
         lines=self.perspective_lines.get(name,[])
-        if len(lines)<2:return False
+        if len(lines)<2:
+            return False
+
+        def _pixel_dir(line):
+            # Use pixel aspect when evaluating angles; normalized image coordinates
+            # distort angles when width != height.
+            w=float(self.original.width) if self.original is not None else 1.0
+            h=float(self.original.height) if self.original is not None else 1.0
+            dx=(line[1][0]-line[0][0])*w
+            dy=(line[1][1]-line[0][1])*h
+            n=math.hypot(dx,dy)
+            if n<1e-9:
+                return None
+            return (dx/n,dy/n)
+
+        def _acute_angle_deg(u,v):
+            if u is None or v is None:
+                return 180.0
+            dot=max(-1.0,min(1.0,abs(u[0]*v[0]+u[1]*v[1])))
+            return math.degrees(math.acos(dot))
+
+        # VP3 / Y axis: in ordinary level shots the vertical family is effectively
+        # parallel.  Two hand-drawn verticals may differ by several degrees, so a
+        # tiny 2.5-degree cutoff creates a false nearby VP.  Treat a visually vertical,
+        # weakly converging family as infinity instead.
         if name=='vp3':
-            # Vertical families in level shots are often effectively parallel.
-            # Do not manufacture a nearby VP3 from tiny line-angle noise.
-            def _ang(line):
-                dx=line[1][0]-line[0][0]; dy=line[1][1]-line[0][1]
-                return math.degrees(math.atan2(dy,dx)) % 180.0
-            a1,a2=_ang(lines[0]),_ang(lines[1])
-            da=abs(a1-a2); da=min(da,180.0-da)
-            if da < 2.5:
+            u1=_pixel_dir(lines[0]); u2=_pixel_dir(lines[1])
+            delta=_acute_angle_deg(u1,u2)
+
+            def _from_vertical(u):
+                if u is None:
+                    return 90.0
+                # 0 deg means screen vertical, independent of line direction.
+                return math.degrees(math.acos(max(0.0,min(1.0,abs(u[1])))))
+
+            v1=_from_vertical(u1); v2=_from_vertical(u2)
+
+            # Conservative film/layout rule:
+            # - almost parallel by itself => infinity
+            # - or both strokes clearly represent vertical architecture and differ
+            #   by less than 10 degrees => infinity
+            if delta < 4.0 or (max(v1,v2) < 14.0 and delta < 10.0):
                 self.vp3_at_infinity=True
                 self.update_perspective_labels()
-                if hasattr(self,'canvas'): self.canvas.update()
+                if hasattr(self,'canvas'):
+                    self.canvas.update()
                 return True
             self.vp3_at_infinity=False
+
         ip=infinite_line_intersection(lines[0][0],lines[0][1],lines[1][0],lines[1][1])
-        if ip is None:return False
-        x=max(-6.0,min(7.0,ip[0])); y=max(-5.0,min(6.0,ip[1]))
-        if name=='vp1': self.vp1=(x,y)
-        elif name=='vp2': self.vp2=(x,y)
-        else: self.vp3=(x,y)
-        # Eye level is the horizon through VP1/VP2; store its y at image center for the label.
+        if ip is None:
+            return False
+
+        # DO NOT clamp the geometric VP.  The old [-6..7]/[-5..6] clamp visibly
+        # changed far VP directions and caused the generated rays to miss the edges
+        # that the user actually traced.
+        x=float(ip[0]); y=float(ip[1])
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return False
+
+        if name=='vp1':
+            self.vp1=(x,y)
+        elif name=='vp2':
+            self.vp2=(x,y)
+        else:
+            self.vp3=(x,y)
+
+        # Eye level = VP1/VP2 horizon y at image center.
         if name in ('vp1','vp2'):
             x1,y1=self.vp1; x2,y2=self.vp2
-            if abs(x2-x1)>1e-9:self.eye_level_y=y1+(0.5-x1)*(y2-y1)/(x2-x1)
-            else:self.eye_level_y=(y1+y2)/2.0
+            if abs(x2-x1)>1e-12:
+                self.eye_level_y=y1+(0.5-x1)*(y2-y1)/(x2-x1)
+            else:
+                self.eye_level_y=(y1+y2)/2.0
+
         self.update_perspective_labels()
-        if hasattr(self,'canvas'): self.canvas.update()
+        if hasattr(self,'canvas'):
+            self.canvas.update()
         return True
+
     def solve_all_perspective_axes(self):
         for n in ('vp1','vp2','vp3'): self.solve_perspective_axis(n)
     def reset_zoom(self):
