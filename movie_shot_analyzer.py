@@ -221,6 +221,44 @@ class ImageCanvas(QWidget):
         for a,b in self.owner.helper_free:
             add(self.npt(fr,*a),self.npt(fr,*b),self.owner.helper_color)
         return lines
+    def _draw_lens_export_overlay(self,p):
+        """Small single-line lens metadata at top-center. Export only."""
+        if not getattr(self.owner,'export_render_mode',False):
+            return
+        if not hasattr(self.owner,'export_overlay_lens') or not self.owner.export_overlay_lens.isChecked():
+            return
+        if not (self.owner._persp_axis_complete.get('vp1',False) and self.owner._persp_axis_complete.get('vp2',False)):
+            return
+        try:
+            est=self.owner.estimate_lens()
+        except Exception:
+            est=None
+        if not est:
+            return
+        eq=est.get('eq35')
+        hfov=est.get('hfov')
+        conf=est.get('confidence','')
+        rng=est.get('range')
+        parts=[]
+        if eq is not None: parts.append(f'Lens {eq:.0f}mm eq.')
+        if hfov is not None: parts.append(f'FOV {hfov:.1f}°')
+        if rng and isinstance(rng,(list,tuple)) and len(rng)>=2:
+            parts.append(f'Range {rng[0]:.0f}–{rng[1]:.0f}mm')
+        if conf: parts.append(f'Confidence {conf}')
+        text='  |  '.join(parts)
+        if not text:return
+
+        fs=int(self.owner.export_lens_font_size.value()) if hasattr(self.owner,'export_lens_font_size') else 11
+        alpha=int(255*(self.owner.export_lens_alpha.value()/100.0)) if hasattr(self.owner,'export_lens_alpha') else 200
+        font=p.font(); font.setPixelSize(fs); font.setBold(False); p.setFont(font)
+        fm=p.fontMetrics(); tw=fm.horizontalAdvance(text); th=fm.height()
+        cx=self.image_rect.center().x(); top=self.image_rect.top()+8
+        box=QRectF(cx-tw/2-7,top,tw+14,th+6)
+        bg=QColor('#101318'); bg.setAlpha(max(25,int(alpha*0.55)))
+        p.setPen(Qt.PenStyle.NoPen); p.setBrush(bg); p.drawRoundedRect(box,4,4)
+        fg=QColor('#f2f5f8'); fg.setAlpha(alpha); p.setPen(fg); p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawText(box,Qt.AlignmentFlag.AlignCenter,text)
+
     def paintEvent(self,e):
         p=QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing); p.fillRect(self.rect(),QColor('#171a20'))
         if self.pixmap is None:
@@ -293,7 +331,10 @@ class ImageCanvas(QWidget):
         p.restore()
         # Perspective overlay is intentionally NOT clipped to the movie frame,
         # because vanishing points often sit far outside the picture area.
-        if self.owner.show_perspective.isChecked():
+        if self.owner.show_perspective.isChecked() and (
+                not getattr(self.owner,'export_render_mode',False)
+                or not hasattr(self.owner,'export_overlay_perspective')
+                or self.owner.export_overlay_perspective.isChecked()):
             self._draw_perspective(p)
         if self.owner.show_frame.isChecked():
             poly=QPolygonF(self.frame_poly())
@@ -306,6 +347,8 @@ class ImageCanvas(QWidget):
                 p.setBrush(fc); hp=QPen(QColor('#0f1712')); hp.setWidthF(1.0); p.setPen(hp)
                 for pt in pts: p.drawRect(QRectF(pt.x()-6,pt.y()-6,12,12))
                 for pt in mids: p.drawRect(QRectF(pt.x()-5,pt.y()-5,10,10))
+        self._draw_lens_export_overlay(p)
+
     def _comp_handle_points(self,fr,name):
         d=self.owner.comp_guides[name]
         if name=='radiating': return [self.npt(fr,*d['center'])]
@@ -563,24 +606,11 @@ class ImageCanvas(QWidget):
                 and self.owner.vp_ray_visible.get('vp3',True)):
             lines=self.owner.perspective_lines.get('vp3',[])
             if len(lines)>=2:
-                dirs=[]
-                for ln in lines[:2]:
-                    dx=(ln[1][0]-ln[0][0])*max(1.0,self.image_rect.width())
-                    dy=(ln[1][1]-ln[0][1])*max(1.0,self.image_rect.height())
-                    ll=math.hypot(dx,dy)
-                    if ll>1e-6:
-                        ux0,uy0=dx/ll,dy/ll
-                        # Make both direction vectors point to the same half-plane.
-                        if dirs and ux0*dirs[0][0]+uy0*dirs[0][1] < 0:
-                            ux0=-ux0; uy0=-uy0
-                        # Keep the user's drawn tilt: longer calibration strokes carry
-                        # more weight than short/noisy ones.
-                        dirs.append((ux0,uy0,ll))
-                if dirs:
-                    total=max(1e-6,sum(v[2] for v in dirs))
-                    ux=sum(v[0]*v[2] for v in dirs)/total
-                    uy=sum(v[1]*v[2] for v in dirs)/total
-                    ul=max(1e-6,math.hypot(ux,uy)); ux/=ul; uy/=ul
+                # V5.36: derive the Y/up guide direction from the solved camera horizon.
+                # The user's VP3 strokes choose/validate the axis, but do not independently
+                # rotate the entire grid. This keeps X/Y/Z mutually consistent.
+                if lines:
+                    ux,uy=self.owner._camera_consistent_vp3_direction()
                     # Normal to the parallel-line family.
                     nx=-uy; ny=ux
                     r=self.image_rect
@@ -829,7 +859,7 @@ class ImageCanvas(QWidget):
     def _update_cursor(self,pos):
         hit=self._hit(pos)
         if not hit:
-            if (hasattr(self.owner,'right_tabs') and self.owner.right_tabs.currentIndex()==0
+            if (hasattr(self.owner,'right_tabs') and self.owner.right_tabs.currentIndex()==1
                     and hasattr(self.owner,'perspective_pencil') and self.owner.perspective_pencil.isChecked()
                     and self.image_rect.contains(pos)):
                 self.setCursor(self._get_pencil_cursor()); return
@@ -858,7 +888,7 @@ class ImageCanvas(QWidget):
         phit=self._perspective_hit(pos)
         in_image=self.image_rect.contains(pos)
         pencil_on=(hasattr(self.owner,'perspective_pencil') and self.owner.perspective_pencil.isChecked())
-        persp_tab=(hasattr(self.owner,'right_tabs') and self.owner.right_tabs.currentIndex()==0)
+        persp_tab=(hasattr(self.owner,'right_tabs') and self.owner.right_tabs.currentIndex()==1)
         if persp_tab and pencil_on and in_image and not phit:
             name=self.owner.active_perspective_axis; li=self.owner.perspective_step
             nx,ny=self._point_to_image_norm(pos)
@@ -1096,7 +1126,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.34 VP3 Tilt Preserve'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.37 Manual Study UI'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -1144,7 +1174,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.34 / VP3傾き保持'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.37 / 手動分析UI'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1167,11 +1197,15 @@ class MovieShotAnalyzer(QMainWindow):
         resetdisp=QPushButton('表示補正をリセット'); resetdisp.clicked.connect(self.reset_display); c.addWidget(resetdisp)
 
         self.section(c,'画像書き出し')
+        self.export_overlay_perspective=QCheckBox('手動パース線・グリッドを含める'); self.export_overlay_perspective.setChecked(True); c.addWidget(self.export_overlay_perspective)
+        self.export_overlay_lens=QCheckBox('レンズ情報を上方中央に含める'); self.export_overlay_lens.setChecked(True); c.addWidget(self.export_overlay_lens)
+        er=QHBoxLayout(); er.addWidget(QLabel('レンズ文字')); self.export_lens_font_size=QSpinBox(); self.export_lens_font_size.setRange(8,24); self.export_lens_font_size.setValue(11); self.export_lens_font_size.setSuffix(' px'); er.addWidget(self.export_lens_font_size); c.addLayout(er)
+        er=QHBoxLayout(); er.addWidget(QLabel('レンズ情報透明度')); self.export_lens_alpha=QSlider(Qt.Orientation.Horizontal); self.export_lens_alpha.setRange(10,100); self.export_lens_alpha.setValue(78); er.addWidget(self.export_lens_alpha,1); self.export_lens_alpha_label=QLabel('78%'); self.export_lens_alpha.valueChanged.connect(lambda v:self.export_lens_alpha_label.setText(f'{v}%')); er.addWidget(self.export_lens_alpha_label); c.addLayout(er)
         export_current=QPushButton('現在の画像を書き出し'); export_current.clicked.connect(self.export_current_image); c.addWidget(export_current)
         self.export_batch_button=QPushButton('全画像を一括書き出し'); self.export_batch_button.clicked.connect(self.batch_export_images); c.addWidget(self.export_batch_button)
         self.export_cancel_button=QPushButton('一括書き出しをキャンセル'); self.export_cancel_button.clicked.connect(self.cancel_batch_export); self.export_cancel_button.setEnabled(False); c.addWidget(self.export_cancel_button)
         self.export_progress_label=QLabel('書き出し: 待機中'); self.export_progress_label.setObjectName('note'); self.export_progress_label.setWordWrap(True); c.addWidget(self.export_progress_label)
-        export_note=QLabel('表示中の構図ガイド・パース・緑フレームを画像に重ねてPNG保存します。EYE LEVEL/VP HORIZONはVP1＋VP2確定時のみ出力。編集用ハンドルは出力しません。'); export_note.setObjectName('note'); export_note.setWordWrap(True); c.addWidget(export_note)
+        export_note=QLabel('表示中の構図ガイド・手動パース・3軸グリッド・緑フレームを現在の色/太さ/透明度でPNG保存します。レンズ推定は上方中央に小さな横一列で出力できます。編集用ハンドルは出力しません。'); export_note.setObjectName('note'); export_note.setWordWrap(True); c.addWidget(export_note)
         c.addStretch(1)
         scroll=QScrollArea(); scroll.setObjectName('controlScroll'); scroll.setWidgetResizable(True); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); scroll.setWidget(cw); scroll.setMinimumWidth(235); scroll.setMaximumWidth(275); self.left_panel=scroll; outer.addWidget(scroll,0)
         self.left_toggle=QPushButton('‹'); self.left_toggle.setObjectName('panelToggle'); self.left_toggle.setFixedWidth(22); self.left_toggle.setToolTip('左パネルを折りたたむ'); self.left_toggle.clicked.connect(self.toggle_left_panel); outer.addWidget(self.left_toggle,0)
@@ -1189,7 +1223,7 @@ class MovieShotAnalyzer(QMainWindow):
         panel=QWidget(); panel.setObjectName('rightPanel'); panel.setMinimumWidth(300); panel.setMaximumWidth(360); self.right_panel=panel
         r=QVBoxLayout(panel); r.setContentsMargins(8,8,8,8); r.setSpacing(6)
         self.right_tabs=QTabWidget(); self.right_tabs.setObjectName('rightTabs'); r.addWidget(self.right_tabs)
-        self._build_perspective_tab(); self._build_composition_tab(); self._build_analysis_tab()
+        self._build_composition_tab(); self._build_perspective_tab(); self._build_analysis_tab()
         outer.addWidget(panel,0)
 
     def _build_perspective_tab(self):
@@ -1200,13 +1234,15 @@ class MovieShotAnalyzer(QMainWindow):
         self.show_perspective_handles=QCheckBox('操作中の白○を表示'); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_handles)
         self.perspective_pencil=QCheckBox('鉛筆式入力（ドラッグで基準線）'); self.perspective_pencil.setChecked(True); lay.addWidget(self.perspective_pencil)
         self.show_perspective_grid=QCheckBox('画像内パースグリッドを表示'); self.show_perspective_grid.setChecked(True); self.show_perspective_grid.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_grid)
-        auto_row=QHBoxLayout(); self.auto_perspective_btn=QPushButton('自動解析'); self.auto_perspective_btn.setToolTip('画像内の直線を検出し、VP1/VP2/VP3候補・アイレベル・パースライン・レンズを自動推定します。'); self.auto_perspective_btn.clicked.connect(self.auto_analyze_perspective); auto_row.addWidget(self.auto_perspective_btn)
-        self.show_auto_detected_lines=QCheckBox('検出線'); self.show_auto_detected_lines.setToolTip('自動解析が根拠に使った画像内の直線を薄く表示します。'); self.show_auto_detected_lines.setChecked(False); self.show_auto_detected_lines.toggled.connect(self.refresh); auto_row.addWidget(self.show_auto_detected_lines); lay.addLayout(auto_row)
-        self.auto_analysis_label=QLabel('自動解析：未実行'); self.auto_analysis_label.setObjectName('note'); self.auto_analysis_label.setWordWrap(True); lay.addWidget(self.auto_analysis_label)
-        cand=QHBoxLayout(); cand.addWidget(QLabel('候補')); self.auto_candidate_buttons=[]
-        for i,name in enumerate(('A','B','C')):
-            cb=QPushButton(name); cb.setCheckable(True); cb.setEnabled(False); cb.clicked.connect(lambda checked=False,n=i:self.apply_auto_candidate(n)); cand.addWidget(cb); self.auto_candidate_buttons.append(cb)
-        lay.addLayout(cand)
+        # V5.37: automatic perspective analysis is intentionally detached from the UI.
+        # The implementation remains in source for a later, isolated reintroduction.
+        self.auto_perspective_btn=None
+        self.show_auto_detected_lines=QCheckBox()
+        self.show_auto_detected_lines.setChecked(False)
+        self.show_auto_detected_lines.hide()
+        self.auto_analysis_label=QLabel()
+        self.auto_analysis_label.hide()
+        self.auto_candidate_buttons=[]
         self.section(lay,'消失点')
         axisrow=QHBoxLayout(); self.axis_buttons={}
         tips={
@@ -1255,13 +1291,13 @@ class MovieShotAnalyzer(QMainWindow):
         c.addLayout(basic)
         note=QLabel('基本ガイドの直線同士の交点には、塗りつぶし○を表示できます。'); note.setObjectName('note'); note.setWordWrap(True); c.addWidget(note)
 
-        self.section(c,'追加の構図')
+        self.section(c,'構図考察ガイド')
         add=QGridLayout(); add.setSpacing(6)
         specs=[('show_radiating','放射構図'),('show_tunnel','トンネル'),('show_golden_triangle','ゴールデントライアングル'),('show_circle','円構図'),('show_cshape','C字構図'),('show_vshape','V字構図'),('show_double_diagonal','ダブル対角線'),('show_scurve','S字構図'),('show_lshape','L字構図'),('show_pyramid','ピラミッド構図')]
         for i,(attr,label) in enumerate(specs):
             b=self._make_toggle_button(label,False); b.toggled.connect(self.comp_guide_visibility_changed); setattr(self,attr,b); add.addWidget(b,i//2,i%2)
         c.addLayout(add)
-        self.edit_comp_guides=QCheckBox('追加構図を編集'); self.edit_comp_guides.setChecked(True); self.edit_comp_guides.toggled.connect(self.comp_edit_toggled); c.addWidget(self.edit_comp_guides)
+        self.edit_comp_guides=QCheckBox('構図考察ガイドを編集'); self.edit_comp_guides.setChecked(True); self.edit_comp_guides.toggled.connect(self.comp_edit_toggled); c.addWidget(self.edit_comp_guides)
         self.reset_comp_btn=QPushButton('選択中ガイドを初期位置へ戻す'); self.reset_comp_btn.setEnabled(False); self.reset_comp_btn.clicked.connect(self.reset_selected_comp_guide); c.addWidget(self.reset_comp_btn)
 
         self.section(c,'補助線')
@@ -2278,13 +2314,41 @@ class MovieShotAnalyzer(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
 
+    def _camera_consistent_vp3_direction(self):
+        """Return a screen-space Y/up direction consistent with solved VP1+VP2.
+        Uses the image-plane horizon normal as the level-camera vertical direction.
+        The sign is chosen to agree with the user's VP3 calibration strokes.
+        """
+        # VP1/VP2 are stored in normalized image coordinates. Convert to canvas pixels.
+        p1=self.canvas._image_norm_to_point(*self.vp1)
+        p2=self.canvas._image_norm_to_point(*self.vp2)
+        hx=p2.x()-p1.x(); hy=p2.y()-p1.y()
+        hl=math.hypot(hx,hy)
+        if hl<1e-6:
+            return (0.0,1.0)
+        # Normal to the actual VP horizon. This preserves camera roll.
+        ux=-hy/hl; uy=hx/hl
+
+        # Choose the same axial orientation as the user's two VP3 strokes.
+        vx=vy=0.0
+        for ln in self.perspective_lines.get('vp3',[])[:2]:
+            a=self.canvas._image_norm_to_point(*ln[0]); b=self.canvas._image_norm_to_point(*ln[1])
+            dx=b.x()-a.x(); dy=b.y()-a.y(); ll=math.hypot(dx,dy)
+            if ll>1e-6:
+                dx/=ll; dy/=ll
+                if vx*dx+vy*dy < 0:
+                    dx=-dx; dy=-dy
+                vx+=dx; vy+=dy
+        if vx*ux+vy*uy < 0:
+            ux=-ux; uy=-uy
+        return (ux,uy)
+
     def solve_perspective_axis(self,name):
         lines=self.perspective_lines.get(name,[])
         if len(lines)<2:return False
         if name=='vp3':
-            # V5.34: judge VP3 parallelism in DISPLAY/PIXEL space.
-            # Raw normalized coordinates distort angles on widescreen images and could
-            # incorrectly flatten a visibly tilted VP3 family into screen-vertical guides.
+            # V5.35: stable two-mode VP3.
+            # Work in image-pixel space so widescreen normalization cannot distort angles.
             iw=float(self.original.width if self.original is not None else 1)
             ih=float(self.original.height if self.original is not None else 1)
             def _ang(line):
@@ -2293,15 +2357,14 @@ class MovieShotAnalyzer(QMainWindow):
                 return math.degrees(math.atan2(dy,dx)) % 180.0
             a1,a2=_ang(lines[0]),_ang(lines[1])
             da=abs(a1-a2); da=min(da,180.0-da)
-            # Only genuinely near-parallel lines become VP3=∞.
-            # Slight convergence should remain a finite VP3 instead of being "corrected"
-            # into a parallel/vertical family.
-            if da < 0.6:
-                self.vp3_at_infinity=True
+            # Near-parallel vertical calibration means a level/near-level camera:
+            # use a camera-consistent Y direction instead of copying either hand-drawn tilt.
+            # Clear convergence still solves a finite VP3.
+            self.vp3_at_infinity=(da < 2.0)
+            if self.vp3_at_infinity:
                 self.update_perspective_labels()
                 if hasattr(self,'canvas'): self.canvas.update()
                 return True
-            self.vp3_at_infinity=False
         ip=infinite_line_intersection(lines[0][0],lines[0][1],lines[1][0],lines[1][1])
         if ip is None:return False
         x=max(-6.0,min(7.0,ip[0])); y=max(-5.0,min(6.0,ip[1]))
