@@ -604,7 +604,6 @@ class ImageCanvas(QWidget):
         # aligned to the average direction of the two user calibration lines.
         if (base_pair_ready and self.owner._persp_axis_complete.get('vp3',False)
                 and self.owner._vp3_solver_state().get('mode')=='infinity'
-                and (not hasattr(self.owner,'show_rays_master') or self.owner.show_rays_master.isChecked())
                 and self.owner.vp_ray_visible.get('vp3',True)):
             lines=self.owner.perspective_lines.get('vp3',[])
             if len(lines)>=2:
@@ -643,8 +642,7 @@ class ImageCanvas(QWidget):
 
         for label,xy,color,key in vp_defs:
             ready = base_pair_ready and (key in ('vp1','vp2') or (self.owner._persp_axis_complete.get('vp3',False) and self.owner._vp3_solver_state().get('mode')=='finite'))
-            master_on=(not hasattr(self.owner,'show_rays_master') or self.owner.show_rays_master.isChecked())
-            if not ready or not master_on or not self.owner.vp_ray_visible.get(key,True):
+            if not ready or not self.owner.vp_ray_visible.get(key,True):
                 continue
             vp=self._image_norm_to_point(*xy); count=max(2,int(self.owner.vp_ray_counts.get(key,12)))
             rc=QColor(color); rc.setAlpha(round(255*self.owner.perspective_alpha.value()/100)); rp=QPen(rc); rp.setWidthF(self.owner.perspective_line_width.value.value()); p.setPen(rp)
@@ -1067,6 +1065,7 @@ class ImageCanvas(QWidget):
                     self.owner.learn_current_perspective('manual',axes=[name])
                 except Exception:
                     pass
+            self.owner._auto_restore_rays_after_manual_solve(name)
             self.owner.advance_after_axis_complete(name)
 
         self.owner.save_perspective()
@@ -1094,10 +1093,6 @@ class ImageCanvas(QWidget):
                     self.owner.solve_perspective_axis(name)
                     self.owner._persp_axis_complete[name]=True
                     self.owner.solve_perspective_axis(name)
-                    if hasattr(self.owner,'show_rays_master') and self.owner.show_rays_master.isChecked():
-                        self.owner.vp_ray_visible[name]=True
-                        if hasattr(self.owner,'vp_ray_checks') and name in self.owner.vp_ray_checks:
-                            self.owner.vp_ray_checks[name].setChecked(True)
                     # V5.30: collect the user's confirmed manual lines as learning data,
                     # without letting learning/autodetection touch the manual input engine.
                     if hasattr(self.owner,'learn_current_perspective'):
@@ -1106,6 +1101,7 @@ class ImageCanvas(QWidget):
                             self.owner.learn_current_perspective('manual',axes=[name])
                         except Exception:
                             pass
+                    self.owner._auto_restore_rays_after_manual_solve(name)
                     self.owner.advance_after_axis_complete(name)
                 self.owner.save_perspective(); self.owner.refresh()
             self.drag_item=None; return
@@ -1126,10 +1122,6 @@ class ImageCanvas(QWidget):
                         self.owner._persp_axis_complete[name]=True
                         self.owner.perspective_step=1
                         self.owner.solve_perspective_axis(name)
-                        if hasattr(self.owner,'show_rays_master') and self.owner.show_rays_master.isChecked():
-                            self.owner.vp_ray_visible[name]=True
-                            if hasattr(self.owner,'vp_ray_checks') and name in self.owner.vp_ray_checks:
-                                self.owner.vp_ray_checks[name].setChecked(True)
                         self.owner.update_perspective_panel_state()
             self.owner.save_perspective()
             self.owner.refresh()
@@ -1137,7 +1129,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V6.0.1 Reset & Ray Fix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V6.0.2 Manual VP + Camera Info'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -1169,7 +1161,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.helper_color='#36d1ff'; self.point_color='#ff3838'; self.frame_color='#20f26b'
         self.vp_ray_colors={'vp1':'#00d4ff','vp2':'#ff4fa3','vp3':'#7ee787'}
         self.vp_ray_counts={'vp1':12,'vp2':12,'vp3':12}
-        self.vp_ray_visible={'vp1':False,'vp2':False,'vp3':False}
+        self.vp_ray_visible={'vp1':True,'vp2':True,'vp3':True}
         self.export_render_mode=False
         self.batch_export_running=False
         self.batch_export_cancelled=False
@@ -1185,7 +1177,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V6.0.1 / Reset & Ray Fix'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V6.0.2 / Manual VP + Camera Info'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1241,10 +1233,11 @@ class MovieShotAnalyzer(QMainWindow):
         tab=QWidget(); outer=QVBoxLayout(tab); outer.setContentsMargins(0,0,0,0)
         sc=QScrollArea(); sc.setWidgetResizable(True); sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         body=QWidget(); lay=QVBoxLayout(body); lay.setContentsMargins(10,10,10,10); lay.setSpacing(9)
-        self.show_perspective=QCheckBox('グリッドを表示'); self.show_perspective.setChecked(True); self.show_perspective.toggled.connect(self.refresh); lay.addWidget(self.show_perspective)
-        self.show_perspective_handles=QCheckBox('編集ハンドルを表示'); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_handles)
-        self.perspective_pencil=QCheckBox('軸の基準線を入力'); self.perspective_pencil.setChecked(True); lay.addWidget(self.perspective_pencil)
-        self.show_perspective_grid=QCheckBox('平面グリッド（床・壁・天井）'); self.show_perspective_grid.setChecked(True); self.show_perspective_grid.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_grid)
+        # Display/input flags kept internally; explanatory block removed from top of tab.
+        self.show_perspective=QCheckBox(); self.show_perspective.setChecked(True); self.show_perspective.hide()
+        self.show_perspective_handles=QCheckBox(); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.hide()
+        self.perspective_pencil=QCheckBox(); self.perspective_pencil.setChecked(True); self.perspective_pencil.hide()
+        self.show_perspective_grid=QCheckBox(); self.show_perspective_grid.setChecked(True); self.show_perspective_grid.hide()
         # V5.37: automatic perspective analysis is intentionally detached from the UI.
         # The implementation remains in source for a later, isolated reintroduction.
         self.auto_perspective_btn=None
@@ -1266,9 +1259,9 @@ class MovieShotAnalyzer(QMainWindow):
         self.persp_step_label=QLabel('1本目：画像上をドラッグして引く'); self.persp_step_label.setObjectName('fileLabel'); lay.addWidget(self.persp_step_label)
         self.persp_label=QLabel('X / Y / Z を同一カメラとして解きます'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); lay.addWidget(self.persp_label)
         row=QHBoxLayout(); resetaxis=QPushButton('選択軸をリセット'); resetaxis.clicked.connect(self.reset_active_perspective_axis); resetall=QPushButton('全てリセット'); resetall.clicked.connect(self.reset_perspective); row.addWidget(resetaxis); row.addWidget(resetall); lay.addLayout(row)
-        self.section(lay,'放射線（補助表示）')
+        self.section(lay,'放射線')
         self.vp_ray_checks={}; self.vp_ray_count_labels={}; self.vp_ray_color_buttons={}
-        for key,label in [('vp1','X 放射線'),('vp2','Z 放射線'),('vp3','Y ガイド（∞時は平行）')]:
+        for key,label in [('vp1','X 放射線'),('vp2','Z 放射線'),('vp3','Y（∞時は平行ガイド）')]:
             row=QHBoxLayout()
             chk=QCheckBox(label); chk.setChecked(self.vp_ray_visible[key]); chk.toggled.connect(lambda v,k=key:self.set_vp_ray_visible(k,v)); row.addWidget(chk); self.vp_ray_checks[key]=chk
             minus=QPushButton('−'); minus.setFixedWidth(34); minus.clicked.connect(lambda checked=False,k=key:self.change_vp_ray_count(k,-1)); row.addWidget(minus)
@@ -1276,21 +1269,11 @@ class MovieShotAnalyzer(QMainWindow):
             plus=QPushButton('+'); plus.setFixedWidth(34); plus.clicked.connect(lambda checked=False,k=key:self.change_vp_ray_count(k,1)); row.addWidget(plus)
             col=QPushButton('色'); col.setFixedWidth(42); col.clicked.connect(lambda checked=False,k=key:self.choose_vp_ray_color(k)); row.addWidget(col); self.vp_ray_color_buttons[key]=col
             lay.addLayout(row)
-        self.show_rays_master=QCheckBox('放射線を表示（補助）')
-        self.show_rays_master.setChecked(False)
-        def _toggle_all_rays(v):
-            for k in ('vp1','vp2','vp3'):
-                self.set_vp_ray_visible(k,v)
-                if k in self.vp_ray_checks:
-                    self.vp_ray_checks[k].setChecked(v)
-            self.refresh()
-        self.show_rays_master.toggled.connect(_toggle_all_rays)
-        lay.addWidget(self.show_rays_master)
         self._update_vp_color_buttons()
         row=QHBoxLayout(); row.addWidget(QLabel('グリッド/放射線の太さ')); self.perspective_line_width=StepControl(0.5,5.0,0.5,0.5); self.perspective_line_width.value.valueChanged.connect(self.refresh); row.addWidget(self.perspective_line_width); lay.addLayout(row)
         row=QHBoxLayout(); row.addWidget(QLabel('グリッド/放射線の透明度')); self.perspective_alpha=QSlider(Qt.Orientation.Horizontal); self.perspective_alpha.setRange(0,100); self.perspective_alpha.setValue(70); self.perspective_alpha.valueChanged.connect(self.refresh); row.addWidget(self.perspective_alpha,1); self.perspective_alpha_label=QLabel('70%'); self.perspective_alpha_label.setFixedWidth(42); self.perspective_alpha.valueChanged.connect(lambda v:self.perspective_alpha_label.setText(f'{v}%')); row.addWidget(self.perspective_alpha_label); lay.addLayout(row)
-        solve_btn=QPushButton('カメラを推定（Solve）')
-        solve_btn.setToolTip('入力済みのX/Y/Z基準線からカメラ・FOV・35mm換算レンズを再計算します。')
+        solve_btn=QPushButton('カメラ情報を計算')
+        solve_btn.setToolTip('手動で確定したVPは動かさず、FOV・35mm換算レンズ・Solve errorを計算します。')
         solve_btn.clicked.connect(self.update_lens_estimate)
         lay.addWidget(solve_btn)
         self.section(lay,'学習')
@@ -1395,6 +1378,20 @@ class MovieShotAnalyzer(QMainWindow):
     # Backward-compatible alias for any older saved/action path.
     def prepare_second_perspective_line(self,name):
         self.begin_second_perspective_line(name)
+
+    def _auto_restore_rays_after_manual_solve(self,name):
+        """Stable behavior: X/Z rays appear when both are solved; Y appears after Y solve."""
+        if name in ('vp1','vp2'):
+            if (self._persp_axis_complete.get('vp1',False)
+                    and self._persp_axis_complete.get('vp2',False)):
+                for k in ('vp1','vp2'):
+                    self.vp_ray_visible[k]=True
+                    if hasattr(self,'vp_ray_checks') and k in self.vp_ray_checks:
+                        self.vp_ray_checks[k].setChecked(True)
+        elif name=='vp3':
+            self.vp_ray_visible['vp3']=True
+            if hasattr(self,'vp_ray_checks') and 'vp3' in self.vp_ray_checks:
+                self.vp_ray_checks['vp3'].setChecked(True)
 
     def advance_after_axis_complete(self,name):
         """Strict pencil workflow: VP1 -> VP2 -> VP3, each starting from a blank first line."""
