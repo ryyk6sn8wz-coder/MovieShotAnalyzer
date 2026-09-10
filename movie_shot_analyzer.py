@@ -1,5 +1,5 @@
 from __future__ import annotations
-import math, sys, json, os
+import math, sys, json, os, copy
 from concurrent.futures import ThreadPoolExecutor
 import random
 from pathlib import Path
@@ -100,6 +100,7 @@ class StepControl(QWidget):
 class ImageCanvas(QWidget):
     def __init__(self,owner):
         super().__init__(); self.owner=owner; self.pixmap=None; self.image_rect=QRectF(); self.drag_item=None
+        self._pan_drag_start=None; self._pan_origin=(0.0,0.0)
         self.setAcceptDrops(True); self.setMinimumSize(640,420); self.setMouseTracking(True); self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     def toggle_left_panel(self):
         if not hasattr(self,'left_panel'): return
@@ -234,7 +235,10 @@ class ImageCanvas(QWidget):
         sc=self.pixmap.size().scaled(target,Qt.AspectRatioMode.KeepAspectRatio)
         z=max(.25,min(4.0,self.owner.view_zoom))
         sw=max(1,int(sc.width()*z)); sh=max(1,int(sc.height()*z))
-        x=av.left()+(av.width()-sw)/2; y=av.top()+(av.height()-sh)/2; self.image_rect=QRectF(x,y,sw,sh)
+        panx,pany=getattr(self.owner,'view_pan',(0.0,0.0))
+        x=av.left()+(av.width()-sw)/2+panx
+        y=av.top()+(av.height()-sh)/2+pany
+        self.image_rect=QRectF(x,y,sw,sh)
         p.drawPixmap(self.image_rect.toRect(),self.pixmap)
         fr=self.frame_rect(); frame_poly=QPolygonF(self.frame_poly()); p.save(); p.setClipPath(self._frame_clip_path())
         lines=self._collect_lines(fr)
@@ -829,6 +833,15 @@ class ImageCanvas(QWidget):
     def mousePressEvent(self,e):
         if e.button()!=Qt.MouseButton.LeftButton:return
         pos=e.position()
+
+        # H latch or held Space = view-only hand/pan tool.
+        if getattr(self.owner,'hand_tool_latched',False) or getattr(self.owner,'space_pan_active',False):
+            self.drag_item=('view_pan',)
+            self._pan_drag_start=QPointF(pos)
+            self._pan_origin=tuple(getattr(self.owner,'view_pan',(0.0,0.0)))
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            e.accept(); return
+
         # Pencil-style calibration has canvas priority while the Perspective tab is active.
         # Existing white endpoint handles still win so a finished line can be fine-tuned.
         phit=self._perspective_hit(pos)
@@ -836,6 +849,7 @@ class ImageCanvas(QWidget):
         pencil_on=(hasattr(self.owner,'perspective_pencil') and self.owner.perspective_pencil.isChecked())
         persp_tab=(hasattr(self.owner,'right_tabs') and self.owner.right_tabs.currentIndex()==0)
         if persp_tab and pencil_on and in_image and not phit:
+            self.owner.push_perspective_undo()
             name=self.owner.active_perspective_axis; li=self.owner.perspective_step
             nx,ny=self._point_to_image_norm(pos)
             lines=[[tuple(pt) for pt in line] for line in self.owner.perspective_lines[name]]
@@ -852,6 +866,7 @@ class ImageCanvas(QWidget):
         if hit:
             typ=hit[0]
             if typ in ('perspective_vp','perspective_anchor','eye_level'):
+                self.owner.push_perspective_undo()
                 self._drag_start=pos
                 self._persp_drag_orig=(tuple(self.owner.vp1),tuple(self.owner.vp2),tuple(self.owner.vp3),float(self.owner.eye_level_y))
             if typ in ('comp_handle','comp_line'):
@@ -871,6 +886,12 @@ class ImageCanvas(QWidget):
         if not self.drag_item:
             self._update_cursor(e.position()); return
         fr=self.frame_rect(); typ=self.drag_item[0]; pos=e.position()
+        if typ=='view_pan':
+            if self._pan_drag_start is not None:
+                dx=pos.x()-self._pan_drag_start.x(); dy=pos.y()-self._pan_drag_start.y()
+                self.owner.view_pan=(self._pan_origin[0]+dx,self._pan_origin[1]+dy)
+                self.update()
+            return
         if typ=='perspective_draw':
             name,li=self.drag_item[1],self.drag_item[2]
             nx,ny=self._point_to_image_norm(pos)
@@ -972,6 +993,13 @@ class ImageCanvas(QWidget):
             self.owner.frame_quad=[(q[0]+dx,q[1]+dy) for q in orig]
         self.update()
     def mouseReleaseEvent(self,e):
+        if self.drag_item and self.drag_item[0]=='view_pan':
+            self.drag_item=None; self._pan_drag_start=None
+            if getattr(self.owner,'hand_tool_latched',False) or getattr(self.owner,'space_pan_active',False):
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            else:
+                self.unsetCursor()
+            e.accept(); return
         if self.drag_item and self.drag_item[0].startswith('frame_'): self.owner.save_frame()
         if self.drag_item and self.drag_item[0]=='perspective_draw':
             name,li=self.drag_item[1],self.drag_item[2]
@@ -1016,13 +1044,15 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — Camera Calibration Solver v1.2 v2'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — Camera Calibration Solver v1.3'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         # Pure Manual Perspective: no automatic-analysis data and no learning data
         # are loaded into the perspective engine. Only the current manual strokes count.
         self.perspective_source='manual'
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
+        self.view_pan=(0.0,0.0); self.hand_tool_latched=False; self.space_pan_active=False
+        self._perspective_undo=[]; self._perspective_redo=[]; self._restoring_perspective_history=False
         self.active_perspective_axis='vp1'; self.perspective_step=0
         self.vp_at_infinity={'vp1':False,'vp2':False,'vp3':False}; self.vp3_at_infinity=False
         self.camera_solution=None
@@ -1067,7 +1097,7 @@ class MovieShotAnalyzer(QMainWindow):
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
-        keyhint=QLabel('← / → キーでも前後移動　・　F：画像優先表示'); keyhint.setObjectName('note'); keyhint.setWordWrap(True); c.addWidget(keyhint)
+        keyhint=QLabel('← / →：画像送り　・　F：画像優先　・　H / Space：手のひら　・　Ctrl/Cmd+Z：パースUndo'); keyhint.setObjectName('note'); keyhint.setWordWrap(True); c.addWidget(keyhint)
 
         self.section(c,'実映像フレーム')
         self.show_frame=QCheckBox('フレーム枠を表示'); self.show_frame.setChecked(True); self.manual_frame=QCheckBox('自由変形ハンドルを使う'); self.manual_frame.setChecked(True); self.show_frame.toggled.connect(self.refresh); c.addWidget(self.show_frame); c.addWidget(self.manual_frame)
@@ -1233,6 +1263,62 @@ class MovieShotAnalyzer(QMainWindow):
         for key,b in self.vp_ray_color_buttons.items():
             b.setStyleSheet(f'background:{self.vp_ray_colors[key]}; color:#111; font-weight:700;')
 
+    def _perspective_history_state(self):
+        return {
+            'vp1':tuple(self.vp1),'vp2':tuple(self.vp2),'vp3':tuple(self.vp3),
+            'eye':float(self.eye_level_y),
+            'lines':copy.deepcopy(self.perspective_lines),
+            'complete':dict(self._persp_axis_complete),
+            'touched':copy.deepcopy(self._persp_anchor_touched),
+            'active':self.active_perspective_axis,
+            'step':int(self.perspective_step),
+            'infinity':dict(getattr(self,'vp_at_infinity',{'vp1':False,'vp2':False,'vp3':False})),
+            'vp3_at_infinity':bool(getattr(self,'vp3_at_infinity',False)),
+        }
+
+    def push_perspective_undo(self):
+        if self._restoring_perspective_history:return
+        self._perspective_undo.append(self._perspective_history_state())
+        if len(self._perspective_undo)>80:self._perspective_undo.pop(0)
+        self._perspective_redo.clear()
+
+    def _restore_perspective_history_state(self,st):
+        self._restoring_perspective_history=True
+        try:
+            self.vp1=tuple(st['vp1']); self.vp2=tuple(st['vp2']); self.vp3=tuple(st['vp3'])
+            self.eye_level_y=float(st['eye'])
+            self.perspective_lines=copy.deepcopy(st['lines'])
+            self._persp_axis_complete=dict(st['complete'])
+            self._persp_anchor_touched=copy.deepcopy(st.get('touched',{}))
+            self.active_perspective_axis=st.get('active','vp1')
+            self.perspective_step=int(st.get('step',0))
+            self.vp_at_infinity=dict(st.get('infinity',{'vp1':False,'vp2':False,'vp3':False}))
+            self.vp3_at_infinity=bool(st.get('vp3_at_infinity',False))
+            self.camera_solution=None; self.camera_inf_dir={'vp1':None,'vp2':None,'vp3':None}; self.camera_solve_error=None
+
+            complete=[k for k in ('vp1','vp2','vp3') if self._persp_axis_complete.get(k,False)]
+            if len(complete)>=2:self.solve_camera_calibration()
+            else:
+                for k in complete:self.solve_perspective_axis(k)
+                self.update_perspective_labels()
+            self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
+        finally:
+            self._restoring_perspective_history=False
+
+    def undo_perspective(self):
+        if not self._perspective_undo:
+            self.statusBar().showMessage('パース：これ以上戻せません',1400); return
+        self._perspective_redo.append(self._perspective_history_state())
+        self._restore_perspective_history_state(self._perspective_undo.pop())
+        self.statusBar().showMessage('パースを1操作戻しました',1200)
+
+    def redo_perspective(self):
+        if not self._perspective_redo:
+            self.statusBar().showMessage('パース：やり直せる操作がありません',1400); return
+        self._perspective_undo.append(self._perspective_history_state())
+        self._restore_perspective_history_state(self._perspective_redo.pop())
+        self.statusBar().showMessage('パースを1操作やり直しました',1200)
+
     def set_perspective_axis(self,name):
         self.active_perspective_axis=name
         # Reopening a completed VP goes straight to line 2 for fine adjustment.
@@ -1330,22 +1416,75 @@ class MovieShotAnalyzer(QMainWindow):
             self._focus_view_on=False
 
     def eventFilter(self,obj,event):
-        if event.type()==QEvent.Type.KeyPress and event.modifiers()==Qt.KeyboardModifier.NoModifier:
-            focus=QApplication.focusWidget()
-            editing=isinstance(focus,(QDoubleSpinBox,QLineEdit,QSlider))
-            if not editing:
-                if event.key()==Qt.Key.Key_Left:
+        et=event.type()
+        focus=QApplication.focusWidget()
+        editing=isinstance(focus,(QDoubleSpinBox,QLineEdit,QSlider))
+
+        if et==QEvent.Type.KeyPress:
+            key=event.key(); mods=event.modifiers()
+            ctrl_or_cmd=bool(mods & (Qt.KeyboardModifier.ControlModifier|Qt.KeyboardModifier.MetaModifier))
+
+            if key==Qt.Key.Key_Z and ctrl_or_cmd and not editing:
+                if mods & Qt.KeyboardModifier.ShiftModifier:
+                    self.redo_perspective()
+                else:
+                    self.undo_perspective()
+                return True
+
+            if key==Qt.Key.Key_Space and not editing:
+                if not event.isAutoRepeat():
+                    self.space_pan_active=True
+                    if hasattr(self,'canvas') and self.canvas.drag_item is None:
+                        self.canvas.setCursor(Qt.CursorShape.OpenHandCursor)
+                return True
+
+            if key==Qt.Key.Key_H and not editing and mods==Qt.KeyboardModifier.NoModifier:
+                if not event.isAutoRepeat():
+                    self.hand_tool_latched=not self.hand_tool_latched
+                    if hasattr(self,'canvas'):
+                        if self.hand_tool_latched:
+                            self.canvas.setCursor(Qt.CursorShape.OpenHandCursor)
+                        elif not self.space_pan_active:
+                            self.canvas.unsetCursor()
+                    self.statusBar().showMessage(
+                        '手のひらツール ON（Hで解除）' if self.hand_tool_latched else '手のひらツール OFF',1800)
+                return True
+
+            if mods==Qt.KeyboardModifier.NoModifier and not editing:
+                if key==Qt.Key.Key_Left:
                     self.prev_image(); return True
-                if event.key()==Qt.Key.Key_Right:
+                if key==Qt.Key.Key_Right:
                     self.next_image(); return True
-                if event.key()==Qt.Key.Key_F:
+                if key==Qt.Key.Key_F:
                     self.toggle_focus_view(); return True
+
+        elif et==QEvent.Type.KeyRelease:
+            if event.key()==Qt.Key.Key_Space and not editing:
+                if not event.isAutoRepeat():
+                    self.space_pan_active=False
+                    if hasattr(self,'canvas') and self.canvas.drag_item is None:
+                        if self.hand_tool_latched:
+                            self.canvas.setCursor(Qt.CursorShape.OpenHandCursor)
+                        else:
+                            self.canvas.unsetCursor()
+                return True
+
         return super().eventFilter(obj,event)
 
     def keyPressEvent(self,e):
         key=e.key(); focus=QApplication.focusWidget()
-        # Keep arrow-key editing inside numeric/text controls and sliders.
         editing=isinstance(focus,(QDoubleSpinBox,QLineEdit,QSlider))
+        mods=e.modifiers()
+        ctrl_or_cmd=bool(mods & (Qt.KeyboardModifier.ControlModifier|Qt.KeyboardModifier.MetaModifier))
+        if key==Qt.Key.Key_Z and ctrl_or_cmd and not editing:
+            if mods & Qt.KeyboardModifier.ShiftModifier:self.redo_perspective()
+            else:self.undo_perspective()
+            e.accept(); return
+        if key==Qt.Key.Key_H and not editing and mods==Qt.KeyboardModifier.NoModifier:
+            self.hand_tool_latched=not self.hand_tool_latched
+            if self.hand_tool_latched:self.canvas.setCursor(Qt.CursorShape.OpenHandCursor)
+            elif not self.space_pan_active:self.canvas.unsetCursor()
+            e.accept(); return
         if key==Qt.Key.Key_Left and not editing:
             self.prev_image(); e.accept(); return
         if key==Qt.Key.Key_Right and not editing:
@@ -1379,6 +1518,7 @@ class MovieShotAnalyzer(QMainWindow):
         p=self.paths[self.current_index]
         try:
             with Image.open(p) as src:self.original=src.convert('RGB').copy()
+            self.view_pan=(0.0,0.0); self._perspective_undo.clear(); self._perspective_redo.clear()
             if str(p) in self.frames:
                 self.frame_quad=[tuple(q) for q in self.frames[str(p)]]
             elif getattr(self,'auto_frame_check',None) is not None and self.auto_frame_check.isChecked():
@@ -1889,7 +2029,7 @@ class MovieShotAnalyzer(QMainWindow):
     def solve_all_perspective_axes(self):
         for n in ('vp1','vp2','vp3'): self.solve_perspective_axis(n)
     def reset_zoom(self):
-        self.view_zoom=1.0; self.update_zoom_label(); self.refresh()
+        self.view_zoom=1.0; self.view_pan=(0.0,0.0); self.update_zoom_label(); self.refresh()
     def update_zoom_label(self):
         if hasattr(self,'zoom_label'): self.zoom_label.setText(f'{round(self.view_zoom*100):d}%')
 
@@ -2069,6 +2209,27 @@ class MovieShotAnalyzer(QMainWindow):
             return None
         return math.sqrt(f2)
 
+    def _legacy_lens_estimate(self):
+        """Comparison with the older VP1/VP2 + VP3 validation weighting."""
+        if self.original is None:return None
+        vx=self._manual_axis_vp_normalized('vp1'); vz=self._manual_axis_vp_normalized('vp2')
+        if vx is None or vz is None:return None
+        base=self._pair_focal_pixels(vx,vz)
+        if base is None:return None
+        vals=[]
+        if self._persp_axis_complete.get('vp3'):
+            vy=self._manual_axis_vp_normalized('vp3')
+            if vy is not None:
+                for a in (vx,vz):
+                    q=self._pair_focal_pixels(a,vy)
+                    if q is not None and math.isfinite(q):vals.append(q)
+        accepted=[v for v in vals if abs(v-base)/max(base,1e-6)<=0.38]
+        fpx=base
+        if accepted:
+            vmed=sorted(accepted)[len(accepted)//2]
+            fpx=0.72*base+0.28*vmed
+        return 36.0*fpx/max(float(self.original.width),1.0)
+
     def estimate_lens(self):
         """Lens estimate decoupled from Camera Solver.
 
@@ -2088,6 +2249,7 @@ class MovieShotAnalyzer(QMainWindow):
         vfov=float(primary['vfov'])
 
         # Independent camera-solver focal value for comparison only.
+        legacy_eq=self._legacy_lens_estimate()
         camera_eq=None
         if getattr(self,'camera_solution',None):
             try:
@@ -2148,6 +2310,7 @@ class MovieShotAnalyzer(QMainWindow):
             'candidates':candidates,
             'autoq':None,
             'camera_eq35':camera_eq,
+            'legacy_eq35':legacy_eq,
             'sensitivity':sens,
         }
 
@@ -2177,6 +2340,8 @@ class MovieShotAnalyzer(QMainWindow):
         for label,val in est['pairs']:
             if val is not None:
                 details.append(f"{label}: {36.0*val/max(float(self.original.width),1.0):.1f}mm相当")
+        if est.get('legacy_eq35') is not None:
+            details.append(f"旧方式比較: {est['legacy_eq35']:.1f}mm相当")
         if est.get('camera_eq35') is not None:
             details.append(f"Camera Solver側: {est['camera_eq35']:.1f}mm相当")
         sens=est.get('sensitivity')

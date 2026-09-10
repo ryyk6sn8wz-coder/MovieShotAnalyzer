@@ -1,23 +1,22 @@
-# Movie Shot Analyzer — Camera Calibration Solver v1.2 Lens Fix
+# Movie Shot Analyzer — Camera Calibration Solver v1.3
 
-パース精度・グリッド計算には触れず、レンズ推定だけを分離・修正した版です。
+ベース: v1.2 Lens Fix
 
-## レンズ推定
-- 主推定：手動X軸VP × 手動Z軸VP
-- Camera Solver由来の焦点距離は比較用に限定
-- Y/VP3はレンズ中心値を引っ張らない
-- 約4px相当の入力揺らぎをモンテカルロ評価し、10–90%レンジを推定
-- レンズ信頼度はこの感度レンジから判定
-- Solve error（パース整合度）とレンズ信頼度を分離
-- 38mm固定のようなCamera Solver側への吸着をレンズ主値から排除
-
-## パース
-Camera Calibration Solver v1.1 のパース計算・グリッド間隔・XYZ解は変更していません。
+## v1.3
+- H: 手のひらツールを固定ON/OFF
+- Spaceを押している間: 一時的に手のひらツール
+- 手のひら中の左ドラッグ: 画像ビューをパン
+- パンは表示だけを移動し、パース座標・VP・レンズ計算は変更しない
+- Ctrl+Z / Cmd+Z: 手動パースを1操作Undo
+- Ctrl+Shift+Z / Cmd+Shift+Z: Redo
+- X→Z→Yの途中でも、直前の線へ戻って引き直せる
+- Undo/Redo後はCamera Solver・グリッド・レンズ表示を再計算
+- レンズ欄に「旧方式比較」を追加
+- 現在のX/Z独立推定、旧方式比較、Camera Solver側を比較可能
+- v1.2のレンズ感度レンジを維持
 
 ## FIX
-- 左右パネル開閉を維持
-- パースタブ上部に説明文なし
-- X軸（水平・左右方向）
-- Z軸（奥行き方向）
-- Y軸（垂直・上下方向）
-- 自動判定データは使用しない
+- パースCamera Solver本体の数式は変更していません
+- パースグリッド間隔の計算は変更していません
+- 自動パース判定データは使用しません
+- __pycache__ は配布ZIPに含めません
