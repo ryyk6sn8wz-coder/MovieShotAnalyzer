@@ -1,13 +1,18 @@
-# Movie Shot Analyzer V6.0.2 — Manual VP + Camera Info
+# Movie Shot Analyzer — V5.30 Perspective Baseline
 
-- パース・レンズタブ上部の説明的な4項目を削除
-- 「放射線を表示（補助）」マスター項目を削除
-- VP1(X) + VP2(Z) が確定した時点で、以前の安定版と同様にX/Z放射線を自動表示
-- VP3(Y)確定後はYも表示。∞判定時は平行ガイド
-- 軸ごとのON/OFF、本数、色は維持
-- 軸リセット後に引き直しても放射線表示が復帰
-- Camera Solverは手動VPを動かさず、レンズ/FOV/Solve errorの評価に限定
-- X=水平・左右、Y=垂直・上下、Z=奥行き表記
-- 左右パネル開閉はFIX仕様として維持
-- WindowsはPyInstaller --onefile
-- GitHub ActionsのArtifactにはEXEを直接入れる（内側ZIPを作らない）
+これはパース機能の基準確認版です。
+
+## 方針
+- V5.30 の手動パース入力コードをそのまま使用
+- V5.30 の VP1 / VP2 / VP3 の計算をそのまま使用
+- V5.30 の放射線描画をそのまま使用
+- Camera Solver は追加しない
+- 後期版の平面グリッド補正は追加しない
+- VP3 の追加補正は追加しない
+- 自動パース解析は追加しない
+
+まずこの版で、以前うまく動いていたパース挙動そのものを確認します。
+正常なら、この版を固定基準にして新しいUIや書き出し等を一つずつ移植します。
+
+## Windows
+GitHub Actions または build_exe.bat で EXE を作成してください。
