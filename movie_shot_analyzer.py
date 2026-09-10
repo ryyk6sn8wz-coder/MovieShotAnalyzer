@@ -534,7 +534,7 @@ class ImageCanvas(QWidget):
         # always drawn screen-horizontal at the horizon's center-crossing height.
         base_pair_complete=(self.owner._persp_axis_complete.get('vp1',False)
                             and self.owner._persp_axis_complete.get('vp2',False))
-        if base_pair_complete:
+        if base_pair_complete and not (getattr(self.owner,'vp_at_infinity',{}).get('vp1',False) or getattr(self.owner,'vp_at_infinity',{}).get('vp2',False)):
             h1=self._image_norm_to_point(*self.owner.vp1); h2=self._image_norm_to_point(*self.owner.vp2)
             hc=QColor('#8c96a3'); hc.setAlpha(105); hp=QPen(hc); hp.setWidthF(0.8); hp.setStyle(Qt.PenStyle.DashLine); p.setPen(hp)
             hdx=h2.x()-h1.x(); hdy=h2.y()-h1.y(); hln=max(1e-6,math.hypot(hdx,hdy)); hext=10000.0/hln
@@ -555,12 +555,14 @@ class ImageCanvas(QWidget):
         # (VP1 + VP2) are both solved.  This keeps the canvas clean while calibrating.
         base_pair_ready=(self.owner._persp_axis_complete.get('vp1',False)
                          and self.owner._persp_axis_complete.get('vp2',False))
-        # VP3 at infinity: draw a parallel Y family from the user's calibration
-        # strokes.  This is deliberately independent of Camera Solver logic.
-        if (base_pair_ready and self.owner._persp_axis_complete.get('vp3',False)
-                and getattr(self.owner,'vp3_at_infinity',False)
-                and self.owner.vp_ray_visible.get('vp3',True)):
-            lines=self.owner.perspective_lines.get('vp3',[])
+        # Infinite VP families: use the two manual strokes only. Weakly converging
+        # X/Z/Y axes become stable parallel guide families instead of false far VPs.
+        for inf_key in ('vp1','vp2','vp3'):
+            infmap=getattr(self.owner,'vp_at_infinity',{'vp1':False,'vp2':False,'vp3':False})
+            if not (base_pair_ready and self.owner._persp_axis_complete.get(inf_key,False)
+                    and infmap.get(inf_key,False) and self.owner.vp_ray_visible.get(inf_key,True)):
+                continue
+            lines=self.owner.perspective_lines.get(inf_key,[])
             if len(lines)>=2:
                 w=max(1.0,float(self.owner.original.width))
                 h=max(1.0,float(self.owner.original.height))
@@ -571,10 +573,12 @@ class ImageCanvas(QWidget):
                     dy=(ln[1][1]-ln[0][1])*h
                     n=math.hypot(dx,dy)
                     if n>1e-9:
-                        # Orient consistently upward/downward before averaging.
-                        if dy<0:
-                            dx=-dx; dy=-dy
-                        dirs.append((dx/n,dy/n))
+                        u=(dx/n,dy/n)
+                        # Line direction is unsigned. Align stroke 2 to stroke 1
+                        # before averaging so opposite drag directions cannot cancel.
+                        if dirs and (u[0]*dirs[0][0]+u[1]*dirs[0][1])<0:
+                            u=(-u[0],-u[1])
+                        dirs.append(u)
 
                 if dirs:
                     sx=sum(d[0] for d in dirs); sy=sum(d[1] for d in dirs)
@@ -593,8 +597,8 @@ class ImageCanvas(QWidget):
                              QPointF(r.right(),r.bottom()),QPointF(r.left(),r.bottom())]
                     projs=[c.x()*nx+c.y()*ny for c in corners]
                     lo,hi=min(projs),max(projs)
-                    count=max(2,int(self.owner.vp_ray_counts.get('vp3',12)))
-                    col=QColor(self.owner.vp_ray_colors['vp3'])
+                    count=max(2,int(self.owner.vp_ray_counts.get(inf_key,12)))
+                    col=QColor(self.owner.vp_ray_colors[inf_key])
                     col.setAlpha(round(255*self.owner.perspective_alpha.value()/100))
                     pen=QPen(col); pen.setWidthF(self.owner.perspective_line_width.value.value())
                     p.setPen(pen)
@@ -606,7 +610,7 @@ class ImageCanvas(QWidget):
                                    QPointF(cx+ux*radius,cy+uy*radius))
 
         for label,xy,color,key in vp_defs:
-            ready = base_pair_ready and (key in ('vp1','vp2') or (self.owner._persp_axis_complete.get('vp3',False) and not getattr(self.owner,'vp3_at_infinity',False)))
+            ready = base_pair_ready and self.owner._persp_axis_complete.get(key,False) and not getattr(self.owner,'vp_at_infinity',{}).get(key,False)
             if not ready or not self.owner.vp_ray_visible.get(key,True):
                 continue
             vp=self._image_norm_to_point(*xy); count=max(2,int(self.owner.vp_ray_counts.get(key,12)))
@@ -1008,15 +1012,16 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — Pure Manual Perspective V5.30 Restored V5.11 Manual Perspective'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — Pure Manual Perspective v2'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         # Pure Manual Perspective: no automatic-analysis data and no learning data
         # are loaded into the perspective engine. Only the current manual strokes count.
         self.perspective_source='manual'
         self.vp1=(-0.30,0.50); self.vp2=(1.30,0.50); self.vp3=(0.50,-0.65); self.eye_level_y=0.50; self.view_zoom=1.0
-        self.active_perspective_axis='vp1'; self.perspective_step=0; self.vp3_at_infinity=False
-        self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}; self.vp3_at_infinity=False; self.show_perspective_grid_default=True
+        self.active_perspective_axis='vp1'; self.perspective_step=0
+        self.vp_at_infinity={'vp1':False,'vp2':False,'vp3':False}; self.vp3_at_infinity=False
+        self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._persp_anchor_touched={}; self.show_perspective_grid_default=True
         self.perspective_lines=self.default_perspective_lines()
         self.helper_v=[]; self.helper_h=[]; self.helper_free=[]; self.selected_helper=None
         self.selected_comp_guide=None
@@ -1051,7 +1056,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.30 / V5.11手動パース復元'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('Pure Manual Perspective v2'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1103,17 +1108,17 @@ class MovieShotAnalyzer(QMainWindow):
         tab=QWidget(); outer=QVBoxLayout(tab); outer.setContentsMargins(0,0,0,0)
         sc=QScrollArea(); sc.setWidgetResizable(True); sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         body=QWidget(); lay=QVBoxLayout(body); lay.setContentsMargins(10,10,10,10); lay.setSpacing(9)
-        self.show_perspective=QCheckBox('パースを表示'); self.show_perspective.setChecked(True); self.show_perspective.toggled.connect(self.refresh); lay.addWidget(self.show_perspective)
-        self.show_perspective_handles=QCheckBox('操作中の白○を表示'); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_handles)
-        self.perspective_pencil=QCheckBox('鉛筆式入力（ドラッグで基準線）'); self.perspective_pencil.setChecked(True); lay.addWidget(self.perspective_pencil)
-        self.show_perspective_grid=QCheckBox('画像内パースグリッドを表示'); self.show_perspective_grid.setChecked(True); self.show_perspective_grid.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_grid)
+        self.show_perspective=QCheckBox(); self.show_perspective.setChecked(True); self.show_perspective.hide()
+        self.show_perspective_handles=QCheckBox(); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.hide()
+        self.perspective_pencil=QCheckBox(); self.perspective_pencil.setChecked(True); self.perspective_pencil.hide()
+        self.show_perspective_grid=QCheckBox(); self.show_perspective_grid.setChecked(True); self.show_perspective_grid.hide()
         self.section(lay,'手動パース')
         axisrow=QHBoxLayout(); self.axis_buttons={}
         tips={
             'vp1':'VP1を設定。1本目をドラッグで引き、続けて2本目もドラッグで引くとVPを確定します。',
             'vp2':'VP2を設定。別方向の平行エッジ2本から消失点を求めます。',
             'vp3':'VP3を設定。主に垂直方向の収束を2本の線から求めます。'}
-        for key,label in [('vp1','X / VP1'),('vp2','Z / VP2'),('vp3','Y / VP3')]:
+        for key,label in [('vp1','X軸（水平・左右方向）'),('vp2','Z軸（奥行き方向）'),('vp3','Y軸（垂直・上下方向）')]:
             b=QPushButton(label); b.setCheckable(True); b.setToolTip(tips[key]); b.clicked.connect(lambda checked,k=key:self.set_perspective_axis(k)); axisrow.addWidget(b); self.axis_buttons[key]=b
         lay.addLayout(axisrow)
         self.persp_step_label=QLabel('1本目：画像上をドラッグして引く'); self.persp_step_label.setObjectName('fileLabel'); lay.addWidget(self.persp_step_label)
@@ -1265,7 +1270,7 @@ class MovieShotAnalyzer(QMainWindow):
                 self.persp_step_label.setText(f'{lab} 2本目：短いエッジでもOK・離すと確定')
     def reset_active_perspective_axis(self):
         defaults=self.default_perspective_lines(); name=self.active_perspective_axis
-        import copy; self.perspective_lines[name]=copy.deepcopy(defaults[name]); self._persp_axis_complete[name]=False; self._persp_anchor_touched[(name,0)]=set(); self._persp_anchor_touched.pop((name,1),None); self.perspective_step=0; self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
+        import copy; self.perspective_lines[name]=copy.deepcopy(defaults[name]); self._persp_axis_complete[name]=False; self.vp_at_infinity[name]=False; self.vp3_at_infinity=self.vp_at_infinity['vp3']; self._persp_anchor_touched[(name,0)]=set(); self._persp_anchor_touched.pop((name,1),None); self.perspective_step=0; self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
 
     def _style(self):
         self.setStyleSheet('''QMainWindow,QWidget{background:#20242b;color:#e8edf3}#controlsWidget{background:#20242b}#controlScroll{border:1px solid #343a43;background:#20242b}#appTitle{font-size:20px;font-weight:700}#panelTitle{font-size:18px;font-weight:700}#rightPanel{background:#1b1f26;border:1px solid #343a43}QTabWidget::pane{border:1px solid #343a43;background:#1b1f26}QTabBar::tab{background:#272d36;border:1px solid #3e4652;padding:9px 12px;margin-right:2px}QTabBar::tab:selected{background:#2d6cdf;color:white}QPushButton:checked{background:#2d6cdf;border-color:#68a0ff;color:white}#subtitle,#note{color:#aeb7c4}#section{font-size:14px;font-weight:700;color:#d9e2ec;margin-top:8px;border-top:1px solid #3b424d;padding-top:8px}#fileLabel{background:#171a20;border:1px solid #343a43;border-radius:5px;padding:8px}QPushButton{background:#303641;border:1px solid #48505d;border-radius:5px;padding:7px}QPushButton:hover{background:#3a424f}#panelToggle{padding:2px;font-size:17px;font-weight:700;background:#252b34;border-radius:3px}QPushButton:disabled{color:#69717c;background:#272b32}QLabel{min-height:20px;padding-top:2px;padding-bottom:2px}QCheckBox{min-height:22px;padding:3px 1px}QDoubleSpinBox{background:#171a20;border:1px solid #48505d;padding:4px}QSlider::groove:horizontal{height:4px;background:#3b424d}QSlider::handle:horizontal{width:14px;margin:-5px 0;background:#8ab4f8;border-radius:7px}QScrollBar:vertical{background:#20242b;width:12px}QScrollBar::handle:vertical{background:#4a5260;min-height:28px;border-radius:5px}QStatusBar{background:#171a20;color:#aeb7c4}''')
@@ -1359,15 +1364,9 @@ class MovieShotAnalyzer(QMainWindow):
             self.perspective_lines=copy.deepcopy(pd.get('lines',self.default_perspective_lines()))
             saved_complete=pd.get('complete',{})
             self._persp_axis_complete={k:bool(saved_complete.get(k,False)) for k in ('vp1','vp2','vp3')}
-            self.auto_detected_lines=list(pd.get('auto_lines',[])); self.auto_analysis_quality=pd.get('auto_quality',None); self.auto_analysis_note=str(pd.get('auto_note',''))
-            if hasattr(self,'auto_analysis_label'):
-                if self.auto_analysis_quality is None: self.auto_analysis_label.setText('自動解析：未実行')
-                else: self.auto_analysis_label.setText(f'自動解析：信頼度 {self.auto_analysis_quality:.0f}%'+(f' / {self.auto_analysis_note}' if self.auto_analysis_note else ''))
+            self.vp_at_infinity={k:bool(pd.get('infinity',{}).get(k,False)) for k in ('vp1','vp2','vp3')}
+            self.vp3_at_infinity=self.vp_at_infinity['vp3']
             self._persp_anchor_touched={}
-            # A/B/C candidates belong to the current analysis run; never carry stale candidates to another image.
-            self.auto_candidates=[]; self.auto_candidate_index=-1
-            for b in getattr(self,'auto_candidate_buttons',[]):
-                b.setEnabled(False); b.setChecked(False)
             self.active_perspective_axis='vp1'; self.perspective_step=1 if self._persp_axis_complete.get('vp1',False) else 0
             self.update_perspective_panel_state(); self.update_perspective_labels()
             self.update_display(); self.file_label.setText(f'{p.name}\n{self.current_index+1} / {len(self.paths)}\n{self.original.width} × {self.original.height} px'); self.statusBar().showMessage(str(p))
@@ -1570,695 +1569,51 @@ class MovieShotAnalyzer(QMainWindow):
             'vp2': [[(.54,.43),(.84,.34)],[(.54,.59),(.84,.72)]],
             'vp3': [[(.36,.78),(.43,.30)],[(.64,.78),(.57,.30)]],
         }
-    def _frame_bbox_norm(self):
-        xs=[q[0] for q in self.frame_quad]; ys=[q[1] for q in self.frame_quad]
-        return (max(0.0,min(xs)),max(0.0,min(ys)),min(1.0,max(xs)),min(1.0,max(ys)))
-
-    def _detect_segments_cv(self):
-        """Detect long line segments and return normalized endpoints + length."""
-        if self.original is None or cv2 is None or np is None:
-            return []
-        rgb=np.asarray(self.original.convert('RGB'))
-        h0,w0=rgb.shape[:2]
-        l,t,r,b=self._frame_bbox_norm()
-        x0=max(0,min(w0-1,int(round(l*w0)))); y0=max(0,min(h0-1,int(round(t*h0))))
-        x1=max(x0+2,min(w0,int(round(r*w0)))); y1=max(y0+2,min(h0,int(round(b*h0))))
-        crop=rgb[y0:y1,x0:x1]
-        if crop.size==0:return []
-        ch,cw=crop.shape[:2]
-        scale=min(1.0,1200.0/max(ch,cw))
-        if scale<1.0:
-            crop=cv2.resize(crop,(max(2,int(cw*scale)),max(2,int(ch*scale))),interpolation=cv2.INTER_AREA)
-        gray=cv2.cvtColor(crop,cv2.COLOR_RGB2GRAY)
-        gray=cv2.GaussianBlur(gray,(5,5),0)
-        med=float(np.median(gray)); low=int(max(20,0.66*med)); high=int(min(240,max(low+30,1.33*med)))
-        edges=cv2.Canny(gray,low,high,L2gradient=True)
-        hh,ww=edges.shape[:2]; diag=math.hypot(ww,hh)
-        raw=cv2.HoughLinesP(edges,1,np.pi/360,threshold=max(28,int(diag*0.035)),minLineLength=max(24,int(diag*0.045)),maxLineGap=max(8,int(diag*0.012)))
-        if raw is None:return []
-        out=[]
-        invs=1.0/scale
-        for ln in raw[:,0,:]:
-            xa,ya,xb,yb=[float(v) for v in ln]
-            length=math.hypot(xb-xa,yb-ya)
-            if length<diag*0.04: continue
-            xa=xa*invs+x0; xb=xb*invs+x0; ya=ya*invs+y0; yb=yb*invs+y0
-            a=(xa/w0,ya/h0); bb=(xb/w0,yb/h0)
-            # Ignore near-frame-border detections; black bars and the green frame can dominate otherwise.
-            mx=(a[0]+bb[0])*0.5; my=(a[1]+bb[1])*0.5
-            
-            # Architecture prior: long, clean, frame-spanning straight edges dominate.
-            # Short/local edges (often people, clothing, hair and small props) are deliberately weak.
-            nlen=length/diag
-            border=min(mx,1.0-mx,my,1.0-my)
-            span=max(abs(a[0]-bb[0]),abs(a[1]-bb[1]))
-            structure=1.0 + min(2.5,nlen*8.0) + min(1.2,span*1.8)
-            if nlen < 0.085: structure*=0.26
-            elif nlen < 0.13: structure*=0.58
-            # Long frame-spanning architecture is more trustworthy than local clusters around people.
-            if span >= 0.28: structure*=1.28
-            elif span >= 0.20: structure*=1.12
-            center_dist=math.hypot(mx-0.5,my-0.5)
-            if center_dist < 0.28 and nlen < 0.17 and span < 0.24:
-                structure*=0.30
-            # Dense short edges near the central subject area are frequently people/clothing/props.
-            if 0.20 < mx < 0.80 and 0.16 < my < 0.88 and nlen < 0.105:
-                structure*=0.42
-            # Architectural frames often live near the image perimeter; modest bonus only.
-            if border < 0.18: structure*=1.16
-            # Personal adaptive prior learned from the user's accepted manual/corrected lines.
-            if self.learning_enabled and self.learning_data.get('count',0)>0:
-                pref=self.learning_data.get('feature_mean',{})
-                plen=float(pref.get('length',0.16)); pborder=float(pref.get('border',0.25))
-                length_fit=max(0.55,min(1.65,0.85+nlen/max(plen,0.05)*0.20))
-                border_fit=max(0.72,min(1.28,1.18-abs(border-pborder)*0.8))
-                structure*=length_fit*border_fit
-            out.append({'a':a,'b':bb,'length':nlen,'mid':(mx,my),'structure':structure,'border':border})
-        out.sort(key=lambda z:z['length'],reverse=True)
-        # Hough often returns duplicates. Remove almost-collinear, nearby duplicates.
-        ded=[]
-        for seg in out:
-            ax,ay=seg['a']; bx,by=seg['b']; ang=math.atan2(by-ay,bx-ax)%math.pi
-            keep=True
-            for prev in ded[-50:]:
-                pax,pay=prev['a']; pbx,pby=prev['b']; pang=math.atan2(pby-pay,pbx-pax)%math.pi
-                da=abs(ang-pang); da=min(da,math.pi-da)
-                dm=math.hypot(seg['mid'][0]-prev['mid'][0],seg['mid'][1]-prev['mid'][1])
-                if da<math.radians(1.2) and dm<0.025:
-                    keep=False; break
-            if keep: ded.append(seg)
-            if len(ded)>=110: break
-        return ded
-
-    def _vp_candidate_score(self,vp,segments,err_limit=0.040):
-        vx,vy=vp; support=[]; score=0.0; errs=[]
-        for i,s in enumerate(segments):
-            mx,my=s['mid']; dx=s['b'][0]-s['a'][0]; dy=s['b'][1]-s['a'][1]
-            dl=math.hypot(dx,dy); rx=vx-mx; ry=vy-my; rl=math.hypot(rx,ry)
-            if dl<1e-8 or rl<1e-8: continue
-            err=abs(dx*ry-dy*rx)/(dl*rl)  # sin angular residual
-            # Angular residual; relaxed mode widens this for low-contrast / sparse frames.
-            if err<err_limit:
-                w=s['length']*s.get('structure',1.0)*(1.0-err/err_limit)
-                score+=w; support.append(i); errs.append(err)
-        if len(support)<2:return (0.0,[],1.0)
-        # Reward spatially distributed support rather than several duplicate edges from one object.
-        mids=[segments[i]['mid'] for i in support]
-        spread=0.0
-        for i in range(min(len(mids),12)):
-            for j in range(i+1,min(len(mids),12)):
-                spread=max(spread,math.hypot(mids[i][0]-mids[j][0],mids[i][1]-mids[j][1]))
-        score*=0.65+min(0.7,spread)
-        return (score,support,sum(errs)/len(errs))
-
-    def _find_vp_clusters(self,segments,max_clusters=9,relaxed=False):
-        """Find diverse VP hypotheses. Relaxed mode is a fallback for sparse/low-contrast frames."""
-        if len(segments)<2:return []
-        min_seed_len=0.070 if relaxed else 0.095
-        min_struct=1.40 if relaxed else 1.75
-        seed_ids=[i for i,s in enumerate(segments) if s['length']>=min_seed_len or s.get('structure',1.0)>=min_struct]
-        if len(seed_ids)<4: seed_ids=list(range(min(len(segments),110 if relaxed else 90)))
-        seed_ids=seed_ids[:110 if relaxed else 90]
-        candidates=[]
-        min_cross=math.sin(math.radians(1.8 if relaxed else 3.0))
-        bound=14.0 if relaxed else 10.0
-        for ii in range(len(seed_ids)):
-            i=seed_ids[ii]; a=segments[i]
-            adx=a['b'][0]-a['a'][0]; ady=a['b'][1]-a['a'][1]; al=math.hypot(adx,ady)
-            for jj in range(ii+1,len(seed_ids)):
-                j=seed_ids[jj]; b=segments[j]
-                bdx=b['b'][0]-b['a'][0]; bdy=b['b'][1]-b['a'][1]; bl=math.hypot(bdx,bdy)
-                if al<1e-9 or bl<1e-9:continue
-                sine=abs(adx*bdy-ady*bdx)/(al*bl)
-                if sine<min_cross:continue
-                ip=infinite_line_intersection(a['a'],a['b'],b['a'],b['b'])
-                if ip is None:continue
-                if not (-bound<=ip[0]<=1+bound and -bound<=ip[1]<=1+bound):continue
-                candidates.append(ip)
-        if not candidates:return []
-        cap=1800 if relaxed else 1300
-        if len(candidates)>cap:
-            step=max(1,len(candidates)//cap); candidates=candidates[::step][:cap]
-        scored=[]; err_limit=0.058 if relaxed else 0.040
-        for vp in candidates:
-            sc,supp,err=self._vp_candidate_score(vp,segments,err_limit)
-            if len(supp)<2 or sc<(0.030 if relaxed else 0.055):continue
-            long_support=sum(1 for gi in supp if segments[gi]['length']>=(0.085 if relaxed else 0.12))
-            if long_support==0: sc*=0.60 if relaxed else 0.55
-            mids=[segments[gi]['mid'] for gi in supp[:24]]
-            if mids:
-                xs=[m[0] for m in mids]; ys=[m[1] for m in mids]
-                distribution=(max(xs)-min(xs))+(max(ys)-min(ys))
-                sc*=0.82+min(0.50,distribution*0.50)
-            scored.append((sc,vp,supp,err))
-        scored.sort(key=lambda x:x[0],reverse=True)
-        clusters=[]
-        for sc,vp,supp,err in scored:
-            duplicate=False
-            for c in clusters:
-                d=math.hypot(vp[0]-c['vp'][0],vp[1]-c['vp'][1])
-                scale=(0.12 if relaxed else 0.18)+0.03*max(math.hypot(*vp),math.hypot(*c['vp']))
-                overlap=len(set(supp)&set(c['support']))/max(1,min(len(supp),len(c['support'])))
-                if d<scale and overlap>0.40:
-                    duplicate=True; break
-            if duplicate:continue
-            angs=[]
-            for gi in supp:
-                ss=segments[gi]; dx=ss['b'][0]-ss['a'][0]; dy=ss['b'][1]-ss['a'][1]
-                angs.append(abs(math.degrees(math.atan2(dy,dx)))%180)
-            medvert=sorted([abs(a-90.0) for a in angs])[len(angs)//2] if angs else 90.0
-            clusters.append({'vp':vp,'support':supp,'score':sc,'err':err,'vertical_dev':medvert})
-            if len(clusters)>=max_clusters:break
-        return clusters
-
-
-    def _segment_angle_deg(self,s):
-        dx=s['b'][0]-s['a'][0]; dy=s['b'][1]-s['a'][1]
-        a=math.degrees(math.atan2(dy,dx))%180.0
-        return a
-
-    def _angle_distance_deg(self,a,b):
-        d=abs(a-b)%180.0
-        return min(d,180.0-d)
-
-    def _direction_groups(self,segments,relaxed=False):
-        """Cluster segments by dominant image direction before solving vanishing points.
-
-        This intentionally changes the order of operations compared with V5.17:
-        first find major architectural directions, then estimate one VP per direction.
-        It helps prevent a dense local intersection around people/props from becoming
-        a false global VP.
-        """
-        if not segments: return []
-        binw=5.0
-        bins=[0.0]*36
-        for i,s in enumerate(segments):
-            a=self._segment_angle_deg(s)
-            # Long, structural and spatially useful edges dominate the histogram.
-            w=max(0.001,s['length']*s.get('structure',1.0))
-            if s['length']>=0.20: w*=1.45
-            elif s['length']<0.08: w*=0.45
-            mx,my=s['mid']
-            if 0.20<mx<0.80 and 0.18<my<0.86 and s['length']<0.16:
-                w*=0.34
-            # Very short central edges should almost never define a global perspective family.
-            if 0.28<mx<0.72 and 0.24<my<0.82 and s['length']<0.10:
-                w*=0.28
-            bi=int(a/binw)%36
-            # small circular smoothing so one true family doesn't split on a bin edge
-            bins[bi]+=w
-            bins[(bi-1)%36]+=w*0.42
-            bins[(bi+1)%36]+=w*0.42
-        peaks=[]
-        for i,v in enumerate(bins):
-            if v<=0: continue
-            if v>=bins[(i-1)%36] and v>=bins[(i+1)%36]:
-                peaks.append((v,(i+0.5)*binw))
-        peaks.sort(reverse=True)
-        chosen=[]
-        min_sep=12.0 if relaxed else 15.0
-        for v,a in peaks:
-            if all(self._angle_distance_deg(a,b)>min_sep for _,b in chosen):
-                chosen.append((v,a))
-            if len(chosen)>=6: break
-        groups=[]
-        win=18.0 if relaxed else 14.0
-        for rank,(strength,peak) in enumerate(chosen):
-            ids=[]
-            for i,s in enumerate(segments):
-                if self._angle_distance_deg(self._segment_angle_deg(s),peak)<=win:
-                    ids.append(i)
-            # Keep strongest first, but retain distributed architecture.
-            ids=sorted(ids,key=lambda i:segments[i]['length']*segments[i].get('structure',1.0),reverse=True)[:42]
-            if len(ids)<2: continue
-            mids=[segments[i]['mid'] for i in ids[:20]]
-            spreadx=max(m[0] for m in mids)-min(m[0] for m in mids) if mids else 0
-            spready=max(m[1] for m in mids)-min(m[1] for m in mids) if mids else 0
-            spatial=spreadx+spready
-            # A group concentrated in one small patch is likely a person/object edge cluster.
-            gscore=strength*(0.52+min(0.95,spatial*1.15))
-            if spatial < (0.34 if relaxed else 0.42):
-                gscore*=0.48
-            medvert=self._angle_distance_deg(peak,90.0)
-            groups.append({'ids':ids,'peak':peak,'score':gscore,'vertical_dev':medvert,'spatial':spatial,'rank':rank})
-        groups.sort(key=lambda g:g['score'],reverse=True)
-        return groups
-
-    def _learned_direction_bonus(self,angle):
-        """Small preference for directions the user repeatedly accepted manually.
-
-        This is deliberately a soft prior: it can rank plausible architecture, but it cannot
-        rescue a geometrically weak candidate.
-        """
-        if not self.learning_enabled or self.learning_data.get('count',0) < 2:
-            return 0.0
-        vals=[]
-        for sm in self.learning_data.get('samples',[]):
-            for f in sm.get('features',[]):
-                try: vals.append(float(f.get('angle')))
-                except Exception: pass
-        if not vals:
-            return 0.0
-        # Circular 180-degree distance; nearest accepted directions get at most a modest bonus.
-        d=min(self._angle_distance_deg(angle,v) for v in vals)
-        if d <= 4.0: return 0.34
-        if d <= 8.0: return 0.22
-        if d <= 14.0: return 0.10
-        return 0.0
-
-    def _solve_direction_group_vp(self,group,segments,relaxed=False):
-        """Robust weighted least-squares VP for one direction family."""
-        ids=list(group.get('ids',[]))
-        if len(ids)<2 or np is None: return None
-        # Prefer long architectural members and iteratively reject outliers.
-        active=ids[:]
-        vp=None
-        for _ in range(3):
-            A=[]; B=[]; W=[]
-            for i in active:
-                s=segments[i]; x1,y1=s['a']; x2,y2=s['b']
-                aa=y1-y2; bb=x2-x1; cc=x1*y2-x2*y1
-                norm=math.hypot(aa,bb)
-                if norm<1e-9: continue
-                aa/=norm; bb/=norm; cc/=norm
-                w=max(0.01,s['length']*s.get('structure',1.0))
-                if s['length']>=0.18: w*=1.35
-                A.append((aa,bb)); B.append(-cc); W.append(w)
-            if len(A)<2:return None
-            A=np.asarray(A,float); B=np.asarray(B,float); W=np.asarray(W,float)
-            sw=np.sqrt(W)[:,None]
-            try:
-                sol,_,_,_=np.linalg.lstsq(A*sw,B*np.sqrt(W),rcond=None)
-            except Exception:
-                return None
-            vp=(float(sol[0]),float(sol[1]))
-            # Permit far-off-screen VPs, but reject numerical explosions.
-            if not all(math.isfinite(v) for v in vp) or abs(vp[0])>24 or abs(vp[1])>24:
-                return None
-            residuals=[]
-            for i in active:
-                s=segments[i]; x1,y1=s['a']; x2,y2=s['b']
-                dx=x2-x1; dy=y2-y1; dl=math.hypot(dx,dy)
-                mx,my=s['mid']; rx=vp[0]-mx; ry=vp[1]-my; rl=math.hypot(rx,ry)
-                err=1.0 if dl<1e-9 or rl<1e-9 else abs(dx*ry-dy*rx)/(dl*rl)
-                residuals.append((err,i))
-            residuals.sort()
-            keep=max(2,int(len(residuals)*(0.78 if relaxed else 0.68)))
-            new=[i for _,i in residuals[:keep]]
-            if set(new)==set(active): break
-            active=new
-        if vp is None:return None
-        errlim=0.080 if relaxed else 0.052
-        sc,supp,err=self._vp_candidate_score(vp,[segments[i] for i in ids],errlim)
-        # _vp_candidate_score returned local indices; map to global indices.
-        supp_global=[ids[j] for j in supp]
-        if len(supp_global)<2:return None
-        # Global support may add other collinear architecture outside the initial angle window.
-        gsc,gsupp,gerr=self._vp_candidate_score(vp,segments,errlim)
-        if len(gsupp)>=len(supp_global):
-            supp_global=gsupp; sc=gsc; err=gerr
-        long_support=sum(1 for i in supp_global if segments[i]['length']>=0.11)
-        if long_support<1 and not relaxed:return None
-        score=sc + group.get('score',0.0)*0.28 + min(0.55,long_support*0.08)
-        score += self._learned_direction_bonus(group.get('peak',0.0))
-        # Reject compact/weak local families unless this is the relaxed fallback.
-        if group.get('spatial',0.0) < (0.30 if relaxed else 0.40): score*=0.58
-        return {'vp':vp,'support':supp_global,'score':score,'err':err,'vertical_dev':group.get('vertical_dev',90.0),'direction_peak':group.get('peak',0.0),'group_rank':group.get('rank',0),'group_spatial':group.get('spatial',0.0)}
-
-    def _build_direction_cluster_candidates(self,segments,relaxed=False):
-        """Create A/B/C from genuinely different direction-family combinations."""
-        groups=self._direction_groups(segments,relaxed)
-        solved=[]
-        for g in groups:
-            c=self._solve_direction_group_vp(g,segments,relaxed)
-            if c is not None: solved.append(c)
-        if not solved:return []
-        vertical=[]; planar=[]
-        for c in solved:
-            # Near-vertical families are validation/VP3, not one of the main horizontal pair.
-            if c['vertical_dev'] <= (13.0 if relaxed else 10.0): vertical.append(c)
-            else: planar.append(c)
-        if len(planar)<2:
-            planar=[c for c in solved if c not in vertical] or solved[:]
-        pairs=[]
-        for i in range(len(planar)):
-            for j in range(i+1,len(planar)):
-                a,b=planar[i],planar[j]
-                # Require genuinely different dominant image directions.
-                d=self._angle_distance_deg(a.get('direction_peak',0),b.get('direction_peak',0))
-                if d < (20.0 if relaxed else 25.0): continue
-                sc=self._pair_candidate_score(a,b,segments,relaxed)
-                if sc<=-1e8:continue
-                # Distinct direction peaks and broad support are strongly rewarded.
-                sc += min(0.75,d/65.0)
-                sc += min(0.45,(a.get('group_spatial',0)+b.get('group_spatial',0))*0.22)
-                pairs.append((sc,a,b,d))
-        pairs.sort(key=lambda x:x[0],reverse=True)
-        out=[]; used_sigs=[]
-        # V5.22 deliberately refuses weak 2-direction solutions instead of drawing plausible-looking nonsense.
-        pair_floor=1.18 if relaxed else 1.48
-        for sc,a,b,d in pairs:
-            if sc < pair_floor:
-                continue
-            # label vp1/vp2 by x, preserving the older UI convention
-            hs=sorted((a,b),key=lambda c:c['vp'][0])
-            sig=tuple(sorted((round(a.get('direction_peak',0)/5)*5,round(b.get('direction_peak',0)/5)*5)))
-            if any(len(sig)==len(osig) and sum(abs(x-y) for x,y in zip(sig,osig))<16 for osig in used_sigs):
-                continue
-            item={'vp1':hs[0],'vp2':hs[1],'score':sc,'direction_signature':sig}
-            if vertical:
-                vv=max(vertical,key=lambda c:(c['score']-c['err']*5.0))
-                # VP3 requires notably stronger evidence than the two main directions.
-                if vv['err'] <= (0.042 if relaxed else 0.027) and len(vv['support'])>=3 and vv.get('group_spatial',0.0)>=0.38:
-                    item['vp3']=vv
-            out.append(item); used_sigs.append(sig)
-            if len(out)>=3:break
-        # If no reliable pair exists, keep exactly one strong direction when possible.
-        # This is preferable to forcing a false 2/3-point perspective.
-        if not out:
-            strong=[]
-            single_floor=0.72 if relaxed else 0.95
-            for c in solved:
-                long_support=sum(1 for gi in c.get('support',[]) if segments[gi]['length']>=0.11)
-                if c['score']>=single_floor and len(c.get('support',[]))>=2 and long_support>=1 and c.get('group_spatial',0.0)>=0.34:
-                    strong.append(c)
-            strong.sort(key=lambda c:c['score'],reverse=True)
-            if strong:
-                c=strong[0]
-                out=[{'vp1':c,'score':c['score'],'single':True,'direction_signature':(round(c.get('direction_peak',0)/5)*5,),'confidence_state':'1方向のみ'}]
-        return out
-    def _choose_two_support_lines(self,cluster,segments):
-        ids=cluster['support']
-        if not ids:return None
-        ranked=sorted(ids,key=lambda i:segments[i]['length']*segments[i].get('structure',1.0),reverse=True)
-        first=ranked[0]; second=None
-        m0=segments[first]['mid']
-        for i in ranked[1:]:
-            if math.hypot(segments[i]['mid'][0]-m0[0],segments[i]['mid'][1]-m0[1])>0.10:
-                second=i; break
-        if second is None and len(ranked)>1: second=ranked[1]
-        if second is None:return None
-        def line(i):
-            s=segments[i]; return [tuple(s['a']),tuple(s['b'])]
-        return [line(first),line(second)]
-
-    def _learning_path(self):
-        base=Path(os.getenv('APPDATA') or (Path.home()/'.movie_shot_analyzer'))
-        if os.getenv('APPDATA'): base=base/'MovieShotAnalyzer'
-        base.mkdir(parents=True,exist_ok=True)
-        return base/'perspective_learning.json'
-
-    def _load_learning_data(self):
-        try:
-            fp=self._learning_path()
-            if fp.exists():
-                data=json.loads(fp.read_text(encoding='utf-8'))
-                if isinstance(data,dict) and isinstance(data.get('samples',[]),list): self.learning_data=data
-        except Exception:
-            pass
-
-    def _save_learning_data(self):
-        try: self._learning_path().write_text(json.dumps(self.learning_data,ensure_ascii=False,indent=2),encoding='utf-8')
-        except Exception: pass
-
-    def set_learning_enabled(self,on):
-        self.learning_enabled=bool(on)
-        self.statusBar().showMessage('パース学習：ON' if on else 'パース学習：OFF',3000)
-
-    def reset_learning_data(self):
-        self.learning_data={'version':1,'samples':[],'feature_mean':{'length':0.16,'border':0.25,'vertical':0.25},'count':0}
-        self._save_learning_data()
-        if hasattr(self,'learning_label'): self.learning_label.setText('学習データ：0件')
-        self.statusBar().showMessage('パース学習データをリセットしました。',4000)
-
-    def _line_features(self,line):
-        (x1,y1),(x2,y2)=line; length=math.hypot(x2-x1,y2-y1)
-        mx=(x1+x2)/2; my=(y1+y2)/2; border=min(mx,1-mx,my,1-my)
-        ang=abs(math.degrees(math.atan2(y2-y1,x2-x1)))%180
-        vertical=max(0.0,1.0-min(abs(ang-90.0),90.0)/90.0)
-        return {'length':float(length),'border':float(max(0,min(.5,border))),'vertical':float(vertical),'angle':float(ang)}
-
-    def learn_current_perspective(self,source='manual',axes=None):
-        v521_family_record = self._v521_learning_record("manual")
-        if not self.learning_enabled or self.original is None: return
-        axes=axes or [k for k in ('vp1','vp2','vp3') if self._persp_axis_complete.get(k)]
-        learned=[]
-        for key in axes:
-            if not self._persp_axis_complete.get(key): continue
-            lines=self.perspective_lines.get(key,[])
-            if len(lines)<2: continue
-            feats=[self._line_features(line) for line in lines[:2]]
-            sig=f"{key}:"+';'.join(f"{round(v,3)}" for line in lines[:2] for pt in line for v in pt)
-            if any(x.get('signature')==sig for x in self.learning_data.get('samples',[])): continue
-            learned.append({'source':source,'axis':key,'features':feats,'signature':sig})
-        if not learned: return
-        samples=self.learning_data.setdefault('samples',[]); samples.extend(learned); self.learning_data['samples']=samples[-500:]
-        allf=[f for sm in self.learning_data['samples'] for f in sm.get('features',[])]
-        if allf:
-            self.learning_data['feature_mean']={k:sum(float(f.get(k,0)) for f in allf)/len(allf) for k in ('length','border','vertical')}
-        self.learning_data['count']=len(self.learning_data['samples']); self._save_learning_data()
-        if hasattr(self,'learning_label'): self.learning_label.setText(f"学習データ：{self.learning_data['count']}件")
-        self.statusBar().showMessage(f"パースを学習しました（{source} / 合計 {self.learning_data['count']}件）",3500)
-
-    def _pair_candidate_score(self,a,b,segments,relaxed=False):
-        # Strong preference for two distinct, spatially distributed architectural directions.
-        vx1,vy1=a['vp']; vx2,vy2=b['vp']
-        sep=math.hypot(vx2-vx1,vy2-vy1)
-        if sep < (0.30 if relaxed else 0.55): return -1e9
-        shared=len(set(a['support']) & set(b['support']))
-        if shared:
-            if not relaxed or shared>1: return -1e9
-            score_overlap_penalty=0.35
-        else: score_overlap_penalty=0.0
-        score=a['score']+b['score']-score_overlap_penalty
-        score += min(0.9,sep*0.20)
-        # Two perspective families converging inside the busy center are often local object/person edges.
-        for vx,vy in ((vx1,vy1),(vx2,vy2)):
-            if 0.18<vx<0.82 and 0.18<vy<0.82:
-                score-=0.42
-        # Off-screen VPs are normal for standard/telephoto architectural shots; do not penalize them.
-        # Horizon should not be absurdly steep for the common architectural 2-point case.
-        slope=abs(vy2-vy1)/max(abs(vx2-vx1),0.08)
-        if slope>0.65: score-=min(1.2,(slope-0.65)*1.1)
-        # Physical lens plausibility is a useful rejection test, not a hard truth.
-        cx,cy=.5,.5
-        f2=-((vx1-cx)*(vx2-cx)+(vy1-cy)*(vy2-cy))
-        if f2<=0: score-=1.0
-        else:
-            f=math.sqrt(f2); eq=36.0*f
-            if 14<=eq<=180: score+=0.45
-            elif 8<=eq<=250: score+=0.10
-            else: score-=0.5
-        return score
-
-    def _build_auto_candidates(self,segments,clusters,relaxed=False):
-        """Build up to three genuinely different A/B/C solutions, not three near-duplicates."""
-        vertical=[]; horizontal=[]
-        for c in clusters:
-            longv=sum(1 for i in c['support'] if segments[i]['length']>=(0.085 if relaxed else 0.10))
-            if c['vertical_dev']<=(12.0 if relaxed else 10.0) and len(c['support'])>=2 and longv>=1:
-                vertical.append(c)
-            else: horizontal.append(c)
-        if len(horizontal)<2: horizontal=clusters[:]
-        pairs=[]
-        for i in range(len(horizontal)):
-            for j in range(i+1,len(horizontal)):
-                sc=self._pair_candidate_score(horizontal[i],horizontal[j],segments,relaxed)
-                if sc>-1e8: pairs.append((sc,horizontal[i],horizontal[j]))
-        pairs.sort(key=lambda x:x[0],reverse=True)
-        out=[]
-        def similar_pair(item,other):
-            a1,a2=item['vp1']['vp'],item['vp2']['vp']; b1,b2=other['vp1']['vp'],other['vp2']['vp']
-            direct=max(math.hypot(a1[0]-b1[0],a1[1]-b1[1]),math.hypot(a2[0]-b2[0],a2[1]-b2[1]))
-            support_a=set(item['vp1']['support'])|set(item['vp2']['support'])
-            support_b=set(other['vp1']['support'])|set(other['vp2']['support'])
-            overlap=len(support_a&support_b)/max(1,min(len(support_a),len(support_b)))
-            return direct<0.30 or (direct<0.55 and overlap>0.62)
-        for sc,a,b in pairs:
-            hs=sorted((a,b),key=lambda c:c['vp'][0])
-            item={'vp1':hs[0],'vp2':hs[1],'score':sc}
-            if vertical:
-                v=max(vertical,key=lambda c:c['score'])
-                if v not in hs and v['vertical_dev']<=(10.0 if relaxed else 8.0) and v['err']<=(0.045 if relaxed else 0.028):
-                    item['vp3']=v
-            if any(similar_pair(item,o) for o in out): continue
-            out.append(item)
-            if len(out)>=3: break
-        # Sparse frames: still expose one-direction hypotheses instead of appearing to do nothing.
-        if not out and clusters:
-            for c in clusters[:3]:
-                out.append({'vp1':c,'score':c['score'],'single':True})
-        return out
-
-    def apply_auto_candidate(self,index):
-        if not (0<=index<len(self.auto_candidates)): return
-        cand=self.auto_candidates[index]; self.auto_candidate_index=index
-        segments=getattr(self,'_last_auto_segments',[]); self.auto_detected_lines=[]; qualities=[]
-        for key in ('vp1','vp2','vp3'):
-            c=cand.get(key)
-            if c is None:
-                self._persp_axis_complete[key]=False
-                continue
-            lines=self._choose_two_support_lines(c,segments)
-            if lines is None:
-                self._persp_axis_complete[key]=False; continue
-            self.perspective_lines[key]=lines
-            ip=infinite_line_intersection(lines[0][0],lines[0][1],lines[1][0],lines[1][1]) or c['vp']
-            ip=(max(-8.0,min(9.0,ip[0])),max(-7.0,min(8.0,ip[1])))
-            if key=='vp1': self.vp1=ip
-            elif key=='vp2': self.vp2=ip
-            else: self.vp3=ip
-            self._persp_axis_complete[key]=True
-            self._persp_anchor_touched[(key,0)]={0,1}; self._persp_anchor_touched[(key,1)]={0,1}
-            for gi in c['support']:
-                ss=segments[gi]; self.auto_detected_lines.append((key,tuple(ss['a']),tuple(ss['b'])))
-            long_support=sum(1 for gi in c['support'] if segments[gi]['length']>=0.12)
-            q=12.0+min(28.0,long_support*5.5)+min(18.0,c['score']*12.0)-c['err']*380.0
-            qualities.append(max(5.0,min(82.0,q)))
-        if self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2'):
-            x1,y1=self.vp1; x2,y2=self.vp2
-            self.eye_level_y=(y1+y2)/2 if abs(x2-x1)<1e-9 else y1+(0.5-x1)*(y2-y1)/(x2-x1)
-        self.perspective_source='auto'; self.auto_analysis_quality=sum(qualities)/len(qualities) if qualities else 0.0
-        axes=sum(1 for k in ('vp1','vp2','vp3') if self._persp_axis_complete.get(k))
-        if cand.get('single'):
-            self.auto_analysis_quality=min(self.auto_analysis_quality,58.0)
-        state='1方向のみ・2方向は判定保留' if cand.get('single') else f'{axes}方向'
-        self.auto_analysis_note=f'候補 {chr(65+index)} / {state} / 人物抑制＋構造線ファミリー優先 / 採用線群 {len(self.auto_detected_lines)}本'
-        self.auto_analysis_label.setText(f'自動解析：信頼度 {self.auto_analysis_quality:.0f}% / {self.auto_analysis_note}')
-        for i,b in enumerate(getattr(self,'auto_candidate_buttons',[])):
-            b.blockSignals(True); b.setChecked(i==index); b.blockSignals(False)
-        self.active_perspective_axis=('vp3' if self._persp_axis_complete.get('vp3') else ('vp2' if self._persp_axis_complete.get('vp2') else 'vp1')); self.perspective_step=1
-        self.update_perspective_panel_state(); self.update_perspective_labels(); self.save_perspective(); self.refresh()
-
-    def auto_analyze_perspective(self):
-        """V5.23: conservative direction clustering with reject/one-direction states."""
-        if self.original is None:
-            self.statusBar().showMessage('先に画像を開いてください。',4000); return
-        if cv2 is None or np is None:
-            self.statusBar().showMessage('自動解析には OpenCV / NumPy が必要です。requirements.txt から再ビルドしてください。',7000); return
-        self.statusBar().showMessage('方向クラスタから建築パースを解析中…')
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            segments=self._detect_segments_cv(); self._last_auto_segments=segments
-            self.auto_candidates=self._build_direction_cluster_candidates(segments,False)
-            relaxed_used=False
-            if not self.auto_candidates or (len(self.auto_candidates)==1 and self.auto_candidates[0].get('single')):
-                relaxed=self._build_direction_cluster_candidates(segments,True)
-                if len(relaxed)>len(self.auto_candidates):
-                    self.auto_candidates=relaxed; relaxed_used=True
-            # V5.22 intentionally does not fall back to the old free-intersection solver.
-            # If direction families are weak, report uncertainty instead of fabricating a VP pair.
-            for i,b in enumerate(getattr(self,'auto_candidate_buttons',[])):
-                b.setEnabled(i<len(self.auto_candidates))
-            if not self.auto_candidates:
-                self.auto_detected_lines=[]; self.auto_analysis_quality=0.0; self.auto_analysis_note=f'候補なし / 検出線 {len(segments)}本'
-                self.auto_analysis_label.setText(f'自動解析：判定不能 / 有効なパース方向を検出できません / 検出線 {len(segments)}本')
-                self.statusBar().showMessage(f'自動解析：検出線 {len(segments)} 本。信頼できるパース方向が不足しています。手動入力を使用してください。',8000); self.refresh(); return
-            if relaxed_used:
-                self.statusBar().showMessage('方向クラスタが不足したため緩和条件も使用しました。',4500)
-            self.apply_auto_candidate(0)
-            # Make the method visible in the UI so tests can distinguish V5.22 behaviour.
-            sig=self.auto_candidates[0].get('direction_signature')
-            if sig:
-                self.auto_analysis_note += ' / 方向 ' + '-'.join(str(int(x))+'°' for x in sig)
-                self.auto_analysis_label.setText(f'自動解析：信頼度 {self.auto_analysis_quality:.0f}% / {self.auto_analysis_note}')
-            self.statusBar().showMessage(f'保守的パース解析完了：{len(self.auto_candidates)}候補。弱い方向は無理に採用しません。',7000)
-        except Exception as ex:
-            self.statusBar().showMessage(f'自動解析でエラー: {ex}',9000)
-        finally:
-            QApplication.restoreOverrideCursor()
-
     def solve_perspective_axis(self,name):
-        """Solve one manual axis without altering the user's two calibration strokes.
+        """Pure-manual solve with finite/infinite VP classification for every axis.
 
-        V5.30 input behavior is preserved.  The important change is geometric:
-        far vanishing points are no longer clamped to an arbitrary box, because that
-        moves the VP away from the user's lines and makes the generated rays wrong.
+        Two user strokes are observations of one direction family. Weak convergence is
+        represented as a vanishing point at infinity instead of manufacturing a huge,
+        unstable finite intersection. No automatic-analysis state participates.
         """
         lines=self.perspective_lines.get(name,[])
-        if len(lines)<2:
+        if len(lines)<2 or self.original is None:
             return False
-
-        def _pixel_dir(line):
-            # Use pixel aspect when evaluating angles; normalized image coordinates
-            # distort angles when width != height.
-            w=float(self.original.width) if self.original is not None else 1.0
-            h=float(self.original.height) if self.original is not None else 1.0
-            dx=(line[1][0]-line[0][0])*w
-            dy=(line[1][1]-line[0][1])*h
+        w=max(1.0,float(self.original.width)); h=max(1.0,float(self.original.height))
+        def pdir(line):
+            dx=(line[1][0]-line[0][0])*w; dy=(line[1][1]-line[0][1])*h
             n=math.hypot(dx,dy)
-            if n<1e-9:
-                return None
-            return (dx/n,dy/n)
-
-        def _acute_angle_deg(u,v):
-            if u is None or v is None:
-                return 180.0
+            return None if n<1e-9 else (dx/n,dy/n)
+        def acute(u,v):
+            if u is None or v is None:return 180.0
             dot=max(-1.0,min(1.0,abs(u[0]*v[0]+u[1]*v[1])))
             return math.degrees(math.acos(dot))
-
-        # VP3 / Y axis: in ordinary level shots the vertical family is effectively
-        # parallel.  Two hand-drawn verticals may differ by several degrees, so a
-        # tiny 2.5-degree cutoff creates a false nearby VP.  Treat a visually vertical,
-        # weakly converging family as infinity instead.
-        if name=='vp3':
-            u1=_pixel_dir(lines[0]); u2=_pixel_dir(lines[1])
-            delta=_acute_angle_deg(u1,u2)
-
-            def _from_vertical(u):
-                if u is None:
-                    return 90.0
-                # 0 deg means screen vertical, independent of line direction.
-                return math.degrees(math.acos(max(0.0,min(1.0,abs(u[1])))))
-
-            v1=_from_vertical(u1); v2=_from_vertical(u2)
-
-            # Conservative film/layout rule:
-            # - almost parallel by itself => infinity
-            # - or both strokes clearly represent vertical architecture and differ
-            #   by less than 10 degrees => infinity
-            # For layout work, weakly converging architectural verticals should stay
-            # parallel rather than manufacture a false nearby VP3.
-            # If both strokes are recognisably vertical and their mutual angle is modest,
-            # classify Y as an infinite vanishing point.
-            if delta < 5.0 or (max(v1,v2) < 25.0 and delta < 15.0):
-                self.vp3_at_infinity=True
-                self.update_perspective_labels()
-                if hasattr(self,'canvas'):
-                    self.canvas.update()
-                return True
-            self.vp3_at_infinity=False
-
+        u1,u2=pdir(lines[0]),pdir(lines[1]); delta=acute(u1,u2)
+        # Common rule for X/Z/Y. Below ~4 degrees the intersection is extremely
+        # sensitive to a few pixels of hand jitter, so preserve direction as infinity.
+        infinity = delta < 4.0
+        # Y gets a slightly more tolerant architectural rule: recognisably vertical
+        # strokes with only weak convergence remain parallel.
+        if name=='vp3' and u1 and u2:
+            v1=math.degrees(math.acos(max(0.0,min(1.0,abs(u1[1])))))
+            v2=math.degrees(math.acos(max(0.0,min(1.0,abs(u2[1])))))
+            if max(v1,v2)<25.0 and delta<12.0:
+                infinity=True
+        self.vp_at_infinity[name]=infinity
+        self.vp3_at_infinity=self.vp_at_infinity['vp3']
+        if infinity:
+            self.update_perspective_labels(); self.canvas.update(); return True
         ip=infinite_line_intersection(lines[0][0],lines[0][1],lines[1][0],lines[1][1])
-        if ip is None:
-            return False
-
-        # DO NOT clamp the geometric VP.  The old [-6..7]/[-5..6] clamp visibly
-        # changed far VP directions and caused the generated rays to miss the edges
-        # that the user actually traced.
-        x=float(ip[0]); y=float(ip[1])
-        if not (math.isfinite(x) and math.isfinite(y)):
-            return False
-
-        if name=='vp1':
-            self.vp1=(x,y)
-        elif name=='vp2':
-            self.vp2=(x,y)
-        else:
-            self.vp3=(x,y)
-
-        # Eye level = VP1/VP2 horizon y at image center.
-        if name in ('vp1','vp2'):
+        if ip is None:return False
+        x,y=float(ip[0]),float(ip[1])
+        if not (math.isfinite(x) and math.isfinite(y)):return False
+        if name=='vp1':self.vp1=(x,y)
+        elif name=='vp2':self.vp2=(x,y)
+        else:self.vp3=(x,y)
+        if name in ('vp1','vp2') and not (self.vp_at_infinity['vp1'] or self.vp_at_infinity['vp2']):
             x1,y1=self.vp1; x2,y2=self.vp2
-            if abs(x2-x1)>1e-12:
-                self.eye_level_y=y1+(0.5-x1)*(y2-y1)/(x2-x1)
-            else:
-                self.eye_level_y=(y1+y2)/2.0
-
-        self.update_perspective_labels()
-        if hasattr(self,'canvas'):
-            self.canvas.update()
-        return True
+            self.eye_level_y=(y1+(0.5-x1)*(y2-y1)/(x2-x1)) if abs(x2-x1)>1e-12 else (y1+y2)/2.0
+        self.update_perspective_labels(); self.canvas.update(); return True
 
     def solve_all_perspective_axes(self):
         for n in ('vp1','vp2','vp3'): self.solve_perspective_axis(n)
@@ -2278,6 +1633,7 @@ class MovieShotAnalyzer(QMainWindow):
                 'eye':float(self.eye_level_y),
                 'lines':copy.deepcopy(self.perspective_lines),
                 'complete':dict(self._persp_axis_complete),
+                'infinity':dict(getattr(self,'vp_at_infinity',{'vp1':False,'vp2':False,'vp3':False})),
                 'vp3_at_infinity':bool(getattr(self,'vp3_at_infinity',False)),
             }
 
@@ -2291,6 +1647,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.perspective_step=0
         self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}
         self._persp_anchor_touched={}
+        self.vp_at_infinity={'vp1':False,'vp2':False,'vp3':False}
         self.vp3_at_infinity=False
         self.show_perspective_grid_default=True
         self.perspective_lines=self.default_perspective_lines()
@@ -2303,7 +1660,7 @@ class MovieShotAnalyzer(QMainWindow):
         dx=(self.vp2[0]-self.vp1[0])*(self.original.width if self.original is not None else 1)
         dy=(self.vp2[1]-self.vp1[1])*(self.original.height if self.original is not None else 1)
         roll=math.degrees(math.atan2(dy,dx)) if abs(dx)+abs(dy)>1e-9 else 0.0
-        vp3txt=('VP3: ∞（垂直線ほぼ平行）' if getattr(self,'vp3_at_infinity',False) else f'VP3: ({self.vp3[0]:.2f}, {self.vp3[1]:.2f})'); txt=f'VP1: ({self.vp1[0]:.2f}, {self.vp1[1]:.2f})  /  VP2: ({self.vp2[0]:.2f}, {self.vp2[1]:.2f})\n{vp3txt}  /  EyeLevelY: {self.eye_level_y:.2f}  /  Roll: {roll:+.1f}°'
+        inf=getattr(self,'vp_at_infinity',{'vp1':False,'vp2':False,'vp3':False}); vp1txt=('VP1: ∞' if inf['vp1'] else f'VP1: ({self.vp1[0]:.2f}, {self.vp1[1]:.2f})'); vp2txt=('VP2: ∞' if inf['vp2'] else f'VP2: ({self.vp2[0]:.2f}, {self.vp2[1]:.2f})'); vp3txt=('VP3: ∞（平行）' if inf['vp3'] else f'VP3: ({self.vp3[0]:.2f}, {self.vp3[1]:.2f})'); txt=f'{vp1txt}  /  {vp2txt}\n{vp3txt}  /  EyeLevelY: {self.eye_level_y:.2f}  /  Roll: {roll:+.1f}°'
         if hasattr(self,'persp_label'):
             self.persp_label.setText(txt)
         if hasattr(self,'analysis_perspective'):
@@ -2474,40 +1831,6 @@ class MovieShotAnalyzer(QMainWindow):
         if c.isValid(): self.frame_color=c.name(); self.refresh()
 
 
-    def _v520_postprocess_auto_candidates(self, candidates, segments, frame_w, frame_h):
-        """V5.23: prefer distinct structural direction families; suppress weak VP3; keep uncertain shots conservative."""
-        try:
-            families = self._v520_family_cluster(segments)
-        except Exception:
-            families = []
-        if not candidates:
-            return candidates
-        # Penalize suspicious in-frame/local solutions when their supporting family is known.
-        for c in candidates:
-            try:
-                fams = c.get("families") or []
-                score = float(c.get("score", 0.0))
-                for vp_key, fam_idx in (("vp1",0),("vp2",1)):
-                    if fam_idx < len(fams):
-                        score *= self._v520_penalize_inside_local_vp(c.get(vp_key), fams[fam_idx].get("segments", []), frame_w, frame_h)
-                c["score"] = score
-            except Exception:
-                pass
-        candidates.sort(key=lambda c: float(c.get("score", 0.0)), reverse=True)
-        # Suppress VP3 when the dominant vertical family is effectively parallel.
-        try:
-            verticals = sorted(
-                [f for f in families if abs(((f["angle"]-90.0+90.0)%180.0)-90.0) <= 10.0],
-                key=lambda f: f["weight"], reverse=True
-            )
-            if verticals and self._v520_vertical_family_is_parallel(verticals[0], frame_h):
-                for c in candidates:
-                    c["vp3"] = None
-                    c["vp3_complete"] = False
-                    c["vp3_reason"] = "縦線はほぼ平行：VP3は無限遠として扱います"
-        except Exception:
-            pass
-        return candidates
 
 
 if __name__=='__main__':
