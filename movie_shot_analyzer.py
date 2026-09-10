@@ -27,7 +27,7 @@ from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPen, QPixmap, QPol
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QFileDialog, QGridLayout, QHBoxLayout,
     QLabel, QMainWindow, QPushButton, QScrollArea, QSlider, QDoubleSpinBox, QLineEdit,
-    QVBoxLayout, QWidget, QTabWidget, QMessageBox
+    QVBoxLayout, QWidget, QTabWidget, QMessageBox, QSizePolicy
 )
 
 IMAGE_EXTENSIONS={'.jpg','.jpeg','.png','.bmp','.webp','.tif','.tiff'}
@@ -1016,7 +1016,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — Camera Calibration Solver v2'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — Camera Calibration Solver v1.1 v2'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         # Pure Manual Perspective: no automatic-analysis data and no learning data
@@ -1105,7 +1105,7 @@ class MovieShotAnalyzer(QMainWindow):
         return b
 
     def _build_right_tabs(self,outer):
-        panel=QWidget(); panel.setObjectName('rightPanel'); panel.setMinimumWidth(300); panel.setMaximumWidth(360); self.right_panel=panel
+        panel=QWidget(); panel.setObjectName('rightPanel'); panel.setMinimumWidth(350); panel.setMaximumWidth(430); self.right_panel=panel
         r=QVBoxLayout(panel); r.setContentsMargins(8,8,8,8); r.setSpacing(6)
         self.right_tabs=QTabWidget(); self.right_tabs.setObjectName('rightTabs'); r.addWidget(self.right_tabs)
         self._build_perspective_tab(); self._build_composition_tab(); self._build_analysis_tab()
@@ -1113,8 +1113,14 @@ class MovieShotAnalyzer(QMainWindow):
 
     def _build_perspective_tab(self):
         tab=QWidget(); outer=QVBoxLayout(tab); outer.setContentsMargins(0,0,0,0)
-        sc=QScrollArea(); sc.setWidgetResizable(True); sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        body=QWidget(); lay=QVBoxLayout(body); lay.setContentsMargins(10,10,10,10); lay.setSpacing(9)
+        sc=QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sc.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        body=QWidget()
+        body.setMinimumWidth(0)
+        body.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        lay=QVBoxLayout(body); lay.setContentsMargins(10,10,10,10); lay.setSpacing(9)
         self.show_perspective=QCheckBox(); self.show_perspective.setChecked(True); self.show_perspective.hide()
         self.show_perspective_handles=QCheckBox(); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.hide()
         self.perspective_pencil=QCheckBox(); self.perspective_pencil.setChecked(True); self.perspective_pencil.hide()
@@ -1126,11 +1132,22 @@ class MovieShotAnalyzer(QMainWindow):
             'vp2':'VP2を設定。別方向の平行エッジ2本から消失点を求めます。',
             'vp3':'VP3を設定。主に垂直方向の収束を2本の線から求めます。'}
         for key,label in [('vp1','X軸（水平・左右方向）'),('vp2','Z軸（奥行き方向）'),('vp3','Y軸（垂直・上下方向）')]:
-            b=QPushButton(label); b.setCheckable(True); b.setToolTip(tips[key]); b.clicked.connect(lambda checked,k=key:self.set_perspective_axis(k)); axisrow.addWidget(b); self.axis_buttons[key]=b
+            b=QPushButton(label)
+            b.setCheckable(True)
+            b.setMinimumWidth(0)
+            b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            b.setStyleSheet('QPushButton{font-size:11px;padding:7px 4px;}')
+            b.setToolTip(tips[key])
+            b.clicked.connect(lambda checked,k=key:self.set_perspective_axis(k))
+            axisrow.addWidget(b,1)
+            self.axis_buttons[key]=b
         lay.addLayout(axisrow)
         self.persp_step_label=QLabel('1本目：画像上をドラッグして引く'); self.persp_step_label.setObjectName('fileLabel'); lay.addWidget(self.persp_step_label)
-        self.persp_label=QLabel('未解決'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); lay.addWidget(self.persp_label)
-        row=QHBoxLayout(); resetaxis=QPushButton('選択軸をリセット'); resetaxis.clicked.connect(self.reset_active_perspective_axis); resetall=QPushButton('全てリセット'); resetall.clicked.connect(self.reset_perspective); row.addWidget(resetaxis); row.addWidget(resetall); lay.addLayout(row)
+        self.persp_label=QLabel('未解決'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); self.persp_label.setMinimumWidth(0); lay.addWidget(self.persp_label)
+        row=QHBoxLayout()
+        resetaxis=QPushButton('選択軸をリセット'); resetaxis.setMinimumWidth(0); resetaxis.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed); resetaxis.clicked.connect(self.reset_active_perspective_axis)
+        resetall=QPushButton('全てリセット'); resetall.setMinimumWidth(0); resetall.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed); resetall.clicked.connect(self.reset_perspective)
+        row.addWidget(resetaxis,1); row.addWidget(resetall,1); lay.addLayout(row)
         self.section(lay,'グリッド / 放射線')
         self.vp_ray_checks={}; self.vp_ray_count_labels={}; self.vp_ray_color_buttons={}
         for key,label in [('vp1','X軸'),('vp2','Z軸'),('vp3','Y軸')]:
@@ -1146,12 +1163,12 @@ class MovieShotAnalyzer(QMainWindow):
         row=QHBoxLayout(); row.addWidget(QLabel('パース線の透明度')); self.perspective_alpha=QSlider(Qt.Orientation.Horizontal); self.perspective_alpha.setRange(0,100); self.perspective_alpha.setValue(70); self.perspective_alpha.valueChanged.connect(self.refresh); row.addWidget(self.perspective_alpha,1); self.perspective_alpha_label=QLabel('70%'); self.perspective_alpha_label.setFixedWidth(42); self.perspective_alpha.valueChanged.connect(lambda v:self.perspective_alpha_label.setText(f'{v}%')); row.addWidget(self.perspective_alpha_label); lay.addLayout(row)
         self.section(lay,'カメラ解')
         self.camera_solve_label=QLabel('X/Zの2軸から解けます。Yを追加すると3軸で再計算します。')
-        self.camera_solve_label.setObjectName('fileLabel'); self.camera_solve_label.setWordWrap(True); lay.addWidget(self.camera_solve_label)
+        self.camera_solve_label.setObjectName('fileLabel'); self.camera_solve_label.setWordWrap(True); self.camera_solve_label.setMinimumWidth(0); lay.addWidget(self.camera_solve_label)
         solve_btn=QPushButton('カメラを再計算')
         solve_btn.clicked.connect(self.solve_camera_calibration); lay.addWidget(solve_btn)
         self.section(lay,'レンズ推定（35mm換算）')
-        self.persp_lens=QLabel('VP1 と VP2 を確定すると推定を開始します。'); self.persp_lens.setObjectName('fileLabel'); self.persp_lens.setWordWrap(True); lay.addWidget(self.persp_lens)
-        self.persp_lens_detail=QLabel('2点透視を主推定、VP3は検証として使用します。'); self.persp_lens_detail.setObjectName('note'); self.persp_lens_detail.setWordWrap(True); lay.addWidget(self.persp_lens_detail)
+        self.persp_lens=QLabel('VP1 と VP2 を確定すると推定を開始します。'); self.persp_lens.setObjectName('fileLabel'); self.persp_lens.setWordWrap(True); self.persp_lens.setMinimumWidth(0); lay.addWidget(self.persp_lens)
+        self.persp_lens_detail=QLabel('2点透視を主推定、VP3は検証として使用します。'); self.persp_lens_detail.setObjectName('note'); self.persp_lens_detail.setWordWrap(True); self.persp_lens_detail.setMinimumWidth(0); lay.addWidget(self.persp_lens_detail)
         self.section(lay,'表示')
         row=QHBoxLayout(); row.addWidget(QLabel('作業領域')); self.workspace_scale=QSlider(Qt.Orientation.Horizontal); self.workspace_scale.setRange(100,400); self.workspace_scale.setValue(100); self.workspace_scale.valueChanged.connect(self.refresh); row.addWidget(self.workspace_scale,1); self.workspace_label=QLabel('100%'); self.workspace_label.setFixedWidth(46); self.workspace_scale.valueChanged.connect(lambda v:self.workspace_label.setText(f'{v}%')); row.addWidget(self.workspace_label); lay.addLayout(row)
         row=QHBoxLayout(); row.addWidget(QLabel('ホイールズーム')); self.zoom_label=QLabel('100%'); row.addWidget(self.zoom_label); zreset=QPushButton('100%'); zreset.clicked.connect(self.reset_zoom); row.addWidget(zreset); lay.addLayout(row)
