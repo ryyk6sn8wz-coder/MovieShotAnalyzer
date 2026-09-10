@@ -1016,7 +1016,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — Camera Calibration Solver v1.1 v2'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — Camera Calibration Solver v1.2 v2'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         # Pure Manual Perspective: no automatic-analysis data and no learning data
@@ -1168,7 +1168,7 @@ class MovieShotAnalyzer(QMainWindow):
         solve_btn.clicked.connect(self.solve_camera_calibration); lay.addWidget(solve_btn)
         self.section(lay,'レンズ推定（35mm換算）')
         self.persp_lens=QLabel('VP1 と VP2 を確定すると推定を開始します。'); self.persp_lens.setObjectName('fileLabel'); self.persp_lens.setWordWrap(True); self.persp_lens.setMinimumWidth(0); lay.addWidget(self.persp_lens)
-        self.persp_lens_detail=QLabel('2点透視を主推定、VP3は検証として使用します。'); self.persp_lens_detail.setObjectName('note'); self.persp_lens_detail.setWordWrap(True); self.persp_lens_detail.setMinimumWidth(0); lay.addWidget(self.persp_lens_detail)
+        self.persp_lens_detail=QLabel('レンズは手動X/Zを主推定。Camera Solver値は比較用です。'); self.persp_lens_detail.setObjectName('note'); self.persp_lens_detail.setWordWrap(True); self.persp_lens_detail.setMinimumWidth(0); lay.addWidget(self.persp_lens_detail)
         self.section(lay,'表示')
         row=QHBoxLayout(); row.addWidget(QLabel('作業領域')); self.workspace_scale=QSlider(Qt.Orientation.Horizontal); self.workspace_scale.setRange(100,400); self.workspace_scale.setValue(100); self.workspace_scale.valueChanged.connect(self.refresh); row.addWidget(self.workspace_scale,1); self.workspace_label=QLabel('100%'); self.workspace_label.setFixedWidth(46); self.workspace_scale.valueChanged.connect(lambda v:self.workspace_label.setText(f'{v}%')); row.addWidget(self.workspace_label); lay.addLayout(row)
         row=QHBoxLayout(); row.addWidget(QLabel('ホイールズーム')); self.zoom_label=QLabel('100%'); row.addWidget(self.zoom_label); zreset=QPushButton('100%'); zreset.clicked.connect(self.reset_zoom); row.addWidget(zreset); lay.addLayout(row)
@@ -1950,6 +1950,113 @@ class MovieShotAnalyzer(QMainWindow):
             self.analysis_perspective.setText(txt)
         self.update_lens_estimate()
 
+    def _manual_axis_vp_normalized(self, name):
+        """Return the raw VP from the user's two manual calibration lines.
+
+        This bypasses the orthonormalized camera solution, so lens estimation can be
+        evaluated independently from the grid solver.
+        """
+        if self.original is None:
+            return None
+        lines=self.perspective_lines.get(name,[])
+        if len(lines)<2:
+            return None
+        ip=infinite_line_intersection(lines[0][0],lines[0][1],lines[1][0],lines[1][1])
+        if ip is None:
+            return None
+        x,y=float(ip[0]),float(ip[1])
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return None
+        return (x,y)
+
+    def _lens_from_manual_xz(self):
+        """Primary lens estimate from raw manual X/Z vanishing points."""
+        if self.original is None:
+            return None
+        if not (self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2')):
+            return None
+        a=self._manual_axis_vp_normalized('vp1')
+        b=self._manual_axis_vp_normalized('vp2')
+        if a is None or b is None:
+            return None
+        fpx=self._pair_focal_pixels(a,b)
+        if fpx is None or not math.isfinite(fpx):
+            return None
+        w=float(self.original.width); h=float(self.original.height)
+        return {
+            'fpx':fpx,
+            'eq35':36.0*fpx/w,
+            'hfov':math.degrees(2.0*math.atan(w/(2.0*fpx))),
+            'vfov':math.degrees(2.0*math.atan(h/(2.0*fpx))),
+            'vp1':a,'vp2':b,
+        }
+
+    def _lens_sensitivity_range(self, samples=96):
+        """Monte-Carlo sensitivity of lens estimate to small manual-line placement error.
+
+        The current perspective/grid solution is NOT modified. We perturb only copies of
+        the four X/Z endpoints by a few image pixels and recompute the raw XZ lens.
+        """
+        if self.original is None:
+            return None
+        if not (self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2')):
+            return None
+
+        w=float(self.original.width); h=float(self.original.height)
+        if w < 2 or h < 2:
+            return None
+
+        base_x=self.perspective_lines.get('vp1',[])
+        base_z=self.perspective_lines.get('vp2',[])
+        if len(base_x)<2 or len(base_z)<2:
+            return None
+
+        # ~4 px 1-sigma, capped relative to image size. This represents careful manual placement.
+        sx=min(4.0/max(w,1.0),0.004)
+        sy=min(4.0/max(h,1.0),0.004)
+        vals=[]
+        rng=random.Random(137)
+
+        def perturbed_vp(lines):
+            pls=[]
+            for ln in lines[:2]:
+                p1=(ln[0][0]+rng.gauss(0,sx), ln[0][1]+rng.gauss(0,sy))
+                p2=(ln[1][0]+rng.gauss(0,sx), ln[1][1]+rng.gauss(0,sy))
+                pls.append((p1,p2))
+            return infinite_line_intersection(pls[0][0],pls[0][1],pls[1][0],pls[1][1])
+
+        for _ in range(max(24,int(samples))):
+            vx=perturbed_vp(base_x)
+            vz=perturbed_vp(base_z)
+            if vx is None or vz is None:
+                continue
+            try:
+                fpx=self._pair_focal_pixels(vx,vz)
+            except Exception:
+                fpx=None
+            if fpx is None or not math.isfinite(fpx):
+                continue
+            eq35=36.0*fpx/w
+            if 4.0 <= eq35 <= 400.0:
+                vals.append(eq35)
+
+        if len(vals)<12:
+            return None
+        vals=sorted(vals)
+        def q(frac):
+            pos=(len(vals)-1)*frac
+            lo=int(math.floor(pos)); hi=int(math.ceil(pos))
+            if lo==hi:return vals[lo]
+            t=pos-lo
+            return vals[lo]*(1-t)+vals[hi]*t
+        return {
+            'p10':q(0.10),
+            'p50':q(0.50),
+            'p90':q(0.90),
+            'spread':q(0.90)-q(0.10),
+            'n':len(vals),
+        }
+
     def _pair_focal_pixels(self, a, b):
         """Focal length in pixels from an orthogonal VP pair with principal point at image center."""
         if self.original is None:
@@ -1963,89 +2070,86 @@ class MovieShotAnalyzer(QMainWindow):
         return math.sqrt(f2)
 
     def estimate_lens(self):
-        """Robust 35mm-equivalent estimate: VP1×VP2 is primary; VP3 validates rather than dominates."""
-        if getattr(self,'camera_solution',None):
-            cs=self.camera_solution
-            eq35=float(cs['eq35']); hfov=float(cs['hfov']); vfov=float(cs['vfov'])
-            err=cs.get('error_deg')
-            if err is None: confidence='中'
-            elif err < 0.75: confidence='高'
-            elif err < 2.0: confidence='中'
-            else: confidence='低'
-            margin=0.12 if confidence=='高' else (0.20 if confidence=='中' else 0.30)
-            lo=max(4.0,eq35*(1.0-margin)); hi=eq35*(1.0+margin)
-            if eq35 < 20: kind='超広角'
-            elif eq35 < 35: kind='広角'
-            elif eq35 < 60: kind='標準'
-            elif eq35 < 100: kind='中望遠'
-            else: kind='望遠'
-            common=[12,14,16,18,20,21,24,28,32,35,40,50,58,65,85,100,135,200]
-            candidates=sorted(sorted(common,key=lambda mm:abs(math.log(max(mm,1)/max(eq35,1))))[:3])
-            return {'eq35':eq35,'base35':eq35,'lo':lo,'hi':hi,'hfov':hfov,'vfov':vfov,
-                    'kind':kind,'confidence':confidence,'pairs':[],'spread':None,
-                    'reason':f'3軸カメラキャリブレーション / Solve error {err:.2f}°' if err is not None else 'カメラキャリブレーション',
-                    'candidates':candidates,'autoq':None}
+        """Lens estimate decoupled from Camera Solver.
+
+        Primary = raw manual X/Z VP pair.
+        Camera Solver focal length = secondary diagnostic only.
+        Y/VP3 never pulls the primary lens value.
+        """
         if self.original is None:
             return None
-        complete=self._persp_axis_complete
-        pairs=[]
-        pair_map={}
-        for label,a,b,key in [
-            ('VP1×VP2',self.vp1,self.vp2,'base'),
-            ('VP1×VP3',self.vp1,self.vp3,'v13'),
-            ('VP2×VP3',self.vp2,self.vp3,'v23')]:
-            needed = (key=='base' and complete.get('vp1') and complete.get('vp2')) or (key=='v13' and complete.get('vp1') and complete.get('vp3')) or (key=='v23' and complete.get('vp2') and complete.get('vp3'))
-            if needed:
-                val=self._pair_focal_pixels(a,b); pairs.append((label,val)); pair_map[key]=val
-        base=pair_map.get('base')
-        if base is None or not math.isfinite(base):
+
+        primary=self._lens_from_manual_xz()
+        if primary is None:
             return None
-        w=float(self.original.width); h=float(self.original.height)
-        base35=36.0*base/w
-        validations=[]
-        for k in ('v13','v23'):
-            v=pair_map.get(k)
-            if v is not None and math.isfinite(v): validations.append(v)
-        # VP3 is a consistency check. Only validation estimates reasonably close to the
-        # horizontal solution influence the final focal length; severe outliers are reported,
-        # not averaged into the answer.
-        accepted=[v for v in validations if abs(v-base)/max(base,1e-6) <= 0.38]
-        if accepted:
-            vmed=sorted(accepted)[len(accepted)//2]
-            fpx=0.72*base+0.28*vmed
-        else:
-            fpx=base
-        eq35=36.0*fpx/w
-        hfov=math.degrees(2.0*math.atan(w/(2.0*fpx)))
-        vfov=math.degrees(2.0*math.atan(h/(2.0*fpx)))
-        discrepancies=[abs(v-base)/max(base,1e-6) for v in validations]
-        validation_spread=max(discrepancies) if discrepancies else None
-        autoq=None
-        if validations:
-            close=sum(1 for d in discrepancies if d<0.18)
-            if close==len(validations) and max(discrepancies)<0.18:
-                confidence='高'; margin=0.14; reason='VP1/VP2とVP3検証がよく一致'
-            elif any(d<0.30 for d in discrepancies):
-                confidence='中'; margin=0.22; reason='水平VPは安定、VP3検証に一部差'
+
+        eq35=float(primary['eq35'])
+        hfov=float(primary['hfov'])
+        vfov=float(primary['vfov'])
+
+        # Independent camera-solver focal value for comparison only.
+        camera_eq=None
+        if getattr(self,'camera_solution',None):
+            try:
+                camera_eq=float(self.camera_solution.get('eq35'))
+            except Exception:
+                camera_eq=None
+
+        sens=self._lens_sensitivity_range()
+        if sens is not None:
+            lo=max(4.0,float(sens['p10']))
+            hi=float(sens['p90'])
+            rel=(hi-lo)/max(eq35,1e-6)
+            if rel < 0.18:
+                lens_conf='高'
+            elif rel < 0.40:
+                lens_conf='中'
             else:
-                confidence='低'; margin=0.32; reason='VP3との整合が低いため水平VPを優先'
+                lens_conf='低'
         else:
-            confidence='中'; margin=0.24; reason='VP1/VP2による2点透視推定'
-        if autoq is not None:
-            if autoq<45:
-                confidence='低'; margin=max(margin,0.34); reason+=' / 自動検出信頼度が低い'
-            elif autoq>=78 and confidence=='中':
-                reason+=' / 自動検出は比較的安定'
-        lo=max(4.0,eq35*(1.0-margin)); hi=eq35*(1.0+margin)
+            # Conservative fallback: do not equate camera Solve error with lens confidence.
+            lo=max(4.0,eq35*0.78)
+            hi=eq35*1.22
+            lens_conf='中'
+
+        # Compare Camera Solver f only as a diagnostic.
+        camera_delta=None
+        if camera_eq is not None and math.isfinite(camera_eq):
+            camera_delta=abs(camera_eq-eq35)/max(eq35,1e-6)
+
         if eq35 < 20: kind='超広角'
         elif eq35 < 35: kind='広角'
         elif eq35 < 60: kind='標準'
         elif eq35 < 100: kind='中望遠'
         else: kind='望遠'
+
         common=[12,14,16,18,20,21,24,28,32,35,40,50,58,65,85,100,135,200]
         candidates=sorted(common,key=lambda mm:abs(math.log(max(mm,1)/max(eq35,1))))[:3]
         candidates=sorted(candidates)
-        return {'eq35':eq35,'base35':base35,'lo':lo,'hi':hi,'hfov':hfov,'vfov':vfov,'kind':kind,'confidence':confidence,'pairs':pairs,'spread':validation_spread,'reason':reason,'candidates':candidates,'autoq':autoq}
+
+        reason='手動X/Z消失点を主推定'
+        if camera_eq is not None:
+            reason+=f' / Camera Solve比較 {camera_eq:.1f}mm'
+            if camera_delta is not None and camera_delta>0.25:
+                reason+='（差が大きいため要注意）'
+
+        return {
+            'eq35':eq35,
+            'base35':eq35,
+            'lo':lo,
+            'hi':hi,
+            'hfov':hfov,
+            'vfov':vfov,
+            'kind':kind,
+            'confidence':lens_conf,
+            'pairs':[('X×Z raw',primary['fpx'])],
+            'spread':None,
+            'reason':reason,
+            'candidates':candidates,
+            'autoq':None,
+            'camera_eq35':camera_eq,
+            'sensitivity':sens,
+        }
 
     def update_lens_estimate(self):
         targets=[x for x in (getattr(self,'analysis_lens',None),getattr(self,'persp_lens',None)) if x is not None]
@@ -2063,25 +2167,24 @@ class MovieShotAnalyzer(QMainWindow):
         cand=' / '.join(f'{x}mm' for x in est['candidates'])
         lens_text=(
             f"推定焦点距離： 約 {est['eq35']:.0f} mm（35mm換算）\n"
-            f"有力レンジ： {est['lo']:.0f}–{est['hi']:.0f} mm\n"
+            f"推定レンジ： {est['lo']:.0f}–{est['hi']:.0f} mm\n"
             f"候補： {cand}\n"
             f"水平画角： 約 {est['hfov']:.1f}°  /  垂直画角： 約 {est['vfov']:.1f}°\n"
-            f"レンズ傾向： {est['kind']}  /  信頼度： {est['confidence']}"
+            f"レンズ傾向： {est['kind']}  /  レンズ推定信頼度： {est['confidence']}"
         )
         for t in targets: t.setText(lens_text)
         details=[]
         for label,val in est['pairs']:
             if val is not None:
                 details.append(f"{label}: {36.0*val/max(float(self.original.width),1.0):.1f}mm相当")
-        note=' / '.join(details)
-        if est['spread'] is not None:
-            note += f"\nVP3検証差: {est['spread']*100:.1f}%"
-        else:
-            note += '\nVP3を確定すると3点透視として追加検証できます。'
-        if est.get('autoq') is not None:
-            note += f"\n自動パース信頼度: {est['autoq']:.0f}%"
-        note += f"\n判定理由: {est['reason']}"
-        detail_text=note + '\n前提：主点=画面中心・正方画素・直交VP。クロップや誇張パースでは誤差が増えます。'
+        if est.get('camera_eq35') is not None:
+            details.append(f"Camera Solver側: {est['camera_eq35']:.1f}mm相当")
+        sens=est.get('sensitivity')
+        if sens is not None:
+            details.append(f"入力感度: {sens['p10']:.1f}–{sens['p90']:.1f}mm（10–90%）")
+        details.append(f"判定理由: {est['reason']}")
+        detail_text=' / '.join(details)
+        detail_text += '\n※ Solve errorはパース整合度、レンズ推定信頼度とは別です。'
         for d in detail_targets: d.setText(detail_text)
 
     def comp_edit_toggled(self,on):
