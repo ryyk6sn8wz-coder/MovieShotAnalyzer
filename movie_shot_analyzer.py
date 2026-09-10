@@ -238,12 +238,13 @@ class ImageCanvas(QWidget):
         eq=est.get('eq35')
         hfov=est.get('hfov')
         conf=est.get('confidence','')
-        rng=est.get('range')
+        rng=(est.get('lo'),est.get('hi')) if est.get('lo') is not None and est.get('hi') is not None else None
         parts=[]
         if eq is not None: parts.append(f'Lens {eq:.0f}mm eq.')
         if hfov is not None: parts.append(f'FOV {hfov:.1f}°')
         if rng and isinstance(rng,(list,tuple)) and len(rng)>=2:
             parts.append(f'Range {rng[0]:.0f}–{rng[1]:.0f}mm')
+        if est.get('solve_error') is not None: parts.append(f"Solve err {est['solve_error']:.2f}°")
         if conf: parts.append(f'Confidence {conf}')
         text='  |  '.join(parts)
         if not text:return
@@ -1126,7 +1127,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.37 Manual Study UI'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.38 Camera Solver'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -1174,7 +1175,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.37.1 / 手動分析UI'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.38 / Camera Solver'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1197,8 +1198,8 @@ class MovieShotAnalyzer(QMainWindow):
         resetdisp=QPushButton('表示補正をリセット'); resetdisp.clicked.connect(self.reset_display); c.addWidget(resetdisp)
 
         self.section(c,'画像書き出し')
-        self.export_overlay_perspective=QCheckBox('手動パース線・グリッドを含める'); self.export_overlay_perspective.setChecked(True); c.addWidget(self.export_overlay_perspective)
-        self.export_overlay_lens=QCheckBox('レンズ情報を上方中央に含める'); self.export_overlay_lens.setChecked(True); c.addWidget(self.export_overlay_lens)
+        self.export_overlay_perspective=QCheckBox('カメラ解グリッド・基準線を含める'); self.export_overlay_perspective.setChecked(True); c.addWidget(self.export_overlay_perspective)
+        self.export_overlay_lens=QCheckBox('レンズ/カメラ情報を上方中央に含める'); self.export_overlay_lens.setChecked(True); c.addWidget(self.export_overlay_lens)
         er=QHBoxLayout(); er.addWidget(QLabel('レンズ文字')); self.export_lens_font_size=QSpinBox(); self.export_lens_font_size.setRange(8,24); self.export_lens_font_size.setValue(11); self.export_lens_font_size.setSuffix(' px'); er.addWidget(self.export_lens_font_size); c.addLayout(er)
         er=QHBoxLayout(); er.addWidget(QLabel('レンズ情報透明度')); self.export_lens_alpha=QSlider(Qt.Orientation.Horizontal); self.export_lens_alpha.setRange(10,100); self.export_lens_alpha.setValue(78); er.addWidget(self.export_lens_alpha,1); self.export_lens_alpha_label=QLabel('78%'); self.export_lens_alpha.valueChanged.connect(lambda v:self.export_lens_alpha_label.setText(f'{v}%')); er.addWidget(self.export_lens_alpha_label); c.addLayout(er)
         export_current=QPushButton('現在の画像を書き出し'); export_current.clicked.connect(self.export_current_image); c.addWidget(export_current)
@@ -1230,10 +1231,10 @@ class MovieShotAnalyzer(QMainWindow):
         tab=QWidget(); outer=QVBoxLayout(tab); outer.setContentsMargins(0,0,0,0)
         sc=QScrollArea(); sc.setWidgetResizable(True); sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         body=QWidget(); lay=QVBoxLayout(body); lay.setContentsMargins(10,10,10,10); lay.setSpacing(9)
-        self.show_perspective=QCheckBox('パースを表示'); self.show_perspective.setChecked(True); self.show_perspective.toggled.connect(self.refresh); lay.addWidget(self.show_perspective)
-        self.show_perspective_handles=QCheckBox('操作中の白○を表示'); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_handles)
-        self.perspective_pencil=QCheckBox('鉛筆式入力（ドラッグで基準線）'); self.perspective_pencil.setChecked(True); lay.addWidget(self.perspective_pencil)
-        self.show_perspective_grid=QCheckBox('画像内パースグリッドを表示'); self.show_perspective_grid.setChecked(True); self.show_perspective_grid.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_grid)
+        self.show_perspective=QCheckBox('パースグリッドを表示'); self.show_perspective.setChecked(True); self.show_perspective.toggled.connect(self.refresh); lay.addWidget(self.show_perspective)
+        self.show_perspective_handles=QCheckBox('編集ハンドル'); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_handles)
+        self.perspective_pencil=QCheckBox('基準線を入力'); self.perspective_pencil.setChecked(True); lay.addWidget(self.perspective_pencil)
+        self.show_perspective_grid=QCheckBox('カメラ解グリッド'); self.show_perspective_grid.setChecked(True); self.show_perspective_grid.toggled.connect(self.refresh); lay.addWidget(self.show_perspective_grid)
         # V5.37: automatic perspective analysis is intentionally detached from the UI.
         # The implementation remains in source for a later, isolated reintroduction.
         self.auto_perspective_btn=None
@@ -1243,23 +1244,23 @@ class MovieShotAnalyzer(QMainWindow):
         self.auto_analysis_label=QLabel()
         self.auto_analysis_label.hide()
         self.auto_candidate_buttons=[]
-        self.section(lay,'消失点')
+        self.section(lay,'カメラキャリブレーション')
         axisrow=QHBoxLayout(); self.axis_buttons={}
         tips={
-            'vp1':'VP1を設定。1本目をドラッグで引き、続けて2本目もドラッグで引くとVPを確定します。',
-            'vp2':'VP2を設定。別方向の平行エッジ2本から消失点を求めます。',
-            'vp3':'VP3を設定。主に垂直方向の収束を2本の線から求めます。'}
-        for key,label in [('vp1','VP1'),('vp2','VP2'),('vp3','VP3')]:
+            'vp1':'X軸方向。画像内の同じ実世界方向に沿う基準線を2本ドラッグします。',
+            'vp2':'Z軸（奥行き）方向。同じ実世界方向に沿う基準線を2本ドラッグします。',
+            'vp3':'Y軸（上方向・垂直）。同じ実世界方向に沿う基準線を2本ドラッグします。'}
+        for key,label in [('vp1','X'),('vp2','Z'),('vp3','Y (up)')]:
             b=QPushButton(label); b.setCheckable(True); b.setToolTip(tips[key]); b.clicked.connect(lambda checked,k=key:self.set_perspective_axis(k)); axisrow.addWidget(b); self.axis_buttons[key]=b
         lay.addLayout(axisrow)
         self.persp_step_label=QLabel('1本目：画像上をドラッグして引く'); self.persp_step_label.setObjectName('fileLabel'); lay.addWidget(self.persp_step_label)
-        self.persp_label=QLabel('VP1 / VP2 / VP3 / Horizon'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); lay.addWidget(self.persp_label)
-        row=QHBoxLayout(); resetaxis=QPushButton('選択VPをリセット'); resetaxis.clicked.connect(self.reset_active_perspective_axis); resetall=QPushButton('全てリセット'); resetall.clicked.connect(self.reset_perspective); row.addWidget(resetaxis); row.addWidget(resetall); lay.addLayout(row)
-        self.section(lay,'放射線（VPからのガイドライン）')
+        self.persp_label=QLabel('X / Y / Z を同一カメラとして解きます'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); lay.addWidget(self.persp_label)
+        row=QHBoxLayout(); resetaxis=QPushButton('選択軸をリセット'); resetaxis.clicked.connect(self.reset_active_perspective_axis); resetall=QPushButton('全てリセット'); resetall.clicked.connect(self.reset_perspective); row.addWidget(resetaxis); row.addWidget(resetall); lay.addLayout(row)
+        self.section(lay,'カメラ解グリッド')
         self.vp_ray_checks={}; self.vp_ray_count_labels={}; self.vp_ray_color_buttons={}
-        for key,label in [('vp1','VP1'),('vp2','VP2'),('vp3','VP3')]:
+        for key,label in [('vp1','X'),('vp2','Z'),('vp3','Y')]:
             row=QHBoxLayout()
-            chk=QCheckBox(f'{label} 放射線'); chk.setChecked(self.vp_ray_visible[key]); chk.toggled.connect(lambda v,k=key:self.set_vp_ray_visible(k,v)); row.addWidget(chk); self.vp_ray_checks[key]=chk
+            chk=QCheckBox(f'{label}軸'); chk.setChecked(self.vp_ray_visible[key]); chk.toggled.connect(lambda v,k=key:self.set_vp_ray_visible(k,v)); row.addWidget(chk); self.vp_ray_checks[key]=chk
             minus=QPushButton('−'); minus.setFixedWidth(34); minus.clicked.connect(lambda checked=False,k=key:self.change_vp_ray_count(k,-1)); row.addWidget(minus)
             val=QLabel(str(self.vp_ray_counts[key])); val.setAlignment(Qt.AlignmentFlag.AlignCenter); val.setFixedWidth(30); row.addWidget(val); self.vp_ray_count_labels[key]=val
             plus=QPushButton('+'); plus.setFixedWidth(34); plus.clicked.connect(lambda checked=False,k=key:self.change_vp_ray_count(k,1)); row.addWidget(plus)
@@ -1268,13 +1269,17 @@ class MovieShotAnalyzer(QMainWindow):
         self._update_vp_color_buttons()
         row=QHBoxLayout(); row.addWidget(QLabel('パース線の太さ')); self.perspective_line_width=StepControl(0.5,5.0,0.5,0.5); self.perspective_line_width.value.valueChanged.connect(self.refresh); row.addWidget(self.perspective_line_width); lay.addLayout(row)
         row=QHBoxLayout(); row.addWidget(QLabel('パース線の透明度')); self.perspective_alpha=QSlider(Qt.Orientation.Horizontal); self.perspective_alpha.setRange(0,100); self.perspective_alpha.setValue(70); self.perspective_alpha.valueChanged.connect(self.refresh); row.addWidget(self.perspective_alpha,1); self.perspective_alpha_label=QLabel('70%'); self.perspective_alpha_label.setFixedWidth(42); self.perspective_alpha.valueChanged.connect(lambda v:self.perspective_alpha_label.setText(f'{v}%')); row.addWidget(self.perspective_alpha_label); lay.addLayout(row)
+        solve_btn=QPushButton('カメラを推定')
+        solve_btn.setToolTip('入力済みのX/Y/Z基準線からカメラ・FOV・35mm換算レンズを再計算します。')
+        solve_btn.clicked.connect(self.update_lens_estimate)
+        lay.addWidget(solve_btn)
         self.section(lay,'学習')
         self.learning_check=QCheckBox('手動・修正パースを学習に使用'); self.learning_check.setChecked(True); self.learning_check.toggled.connect(self.set_learning_enabled); lay.addWidget(self.learning_check)
         self.learning_label=QLabel(f'学習データ：{self.learning_data.get("count",0)}件'); self.learning_label.setObjectName('note'); lay.addWidget(self.learning_label)
         lr=QHBoxLayout(); learn_now=QPushButton('現在の手動パースを学習'); learn_now.clicked.connect(lambda:self.learn_current_perspective('manual')); lr.addWidget(learn_now); reset_learn=QPushButton('学習をリセット'); reset_learn.clicked.connect(self.reset_learning_data); lr.addWidget(reset_learn); lay.addLayout(lr)
-        self.section(lay,'レンズ推定（35mm換算）')
-        self.persp_lens=QLabel('VP1 と VP2 を確定すると推定を開始します。'); self.persp_lens.setObjectName('fileLabel'); self.persp_lens.setWordWrap(True); lay.addWidget(self.persp_lens)
-        self.persp_lens_detail=QLabel('2点透視を主推定、VP3は検証として使用します。'); self.persp_lens_detail.setObjectName('note'); self.persp_lens_detail.setWordWrap(True); lay.addWidget(self.persp_lens_detail)
+        self.section(lay,'カメラ推定結果')
+        self.persp_lens=QLabel('X と Z を確定するとカメラ推定を開始します。'); self.persp_lens.setObjectName('fileLabel'); self.persp_lens.setWordWrap(True); lay.addWidget(self.persp_lens)
+        self.persp_lens_detail=QLabel('X/Zを主解、Y(up)を整合性検証に使用します。'); self.persp_lens_detail.setObjectName('note'); self.persp_lens_detail.setWordWrap(True); lay.addWidget(self.persp_lens_detail)
         self.section(lay,'表示')
         row=QHBoxLayout(); row.addWidget(QLabel('作業領域')); self.workspace_scale=QSlider(Qt.Orientation.Horizontal); self.workspace_scale.setRange(100,400); self.workspace_scale.setValue(100); self.workspace_scale.valueChanged.connect(self.refresh); row.addWidget(self.workspace_scale,1); self.workspace_label=QLabel('100%'); self.workspace_label.setFixedWidth(46); self.workspace_scale.valueChanged.connect(lambda v:self.workspace_label.setText(f'{v}%')); row.addWidget(self.workspace_label); lay.addLayout(row)
         row=QHBoxLayout(); row.addWidget(QLabel('ホイールズーム')); self.zoom_label=QLabel('100%'); row.addWidget(self.zoom_label); zreset=QPushButton('100%'); zreset.clicked.connect(self.reset_zoom); row.addWidget(zreset); lay.addLayout(row)
@@ -2483,7 +2488,23 @@ class MovieShotAnalyzer(QMainWindow):
         common=[12,14,16,18,20,21,24,28,32,35,40,50,58,65,85,100,135,200]
         candidates=sorted(common,key=lambda mm:abs(math.log(max(mm,1)/max(eq35,1))))[:3]
         candidates=sorted(candidates)
-        return {'eq35':eq35,'base35':base35,'lo':lo,'hi':hi,'hfov':hfov,'vfov':vfov,'kind':kind,'confidence':confidence,'pairs':pairs,'spread':validation_spread,'reason':reason,'candidates':candidates,'autoq':autoq}
+        # Angular residual proxy for the orthogonal-camera solve.
+        # For each available orthogonal VP pair, ideal dot((vi-c),(vj-c)) + f^2 == 0.
+        cx=w*0.5; cy=h*0.5
+        residual_angles=[]
+        vp_pairs=[]
+        if complete.get('vp1') and complete.get('vp2'): vp_pairs.append((self.vp1,self.vp2))
+        if complete.get('vp1') and complete.get('vp3') and not getattr(self,'vp3_at_infinity',False): vp_pairs.append((self.vp1,self.vp3))
+        if complete.get('vp2') and complete.get('vp3') and not getattr(self,'vp3_at_infinity',False): vp_pairs.append((self.vp2,self.vp3))
+        for va,vb in vp_pairs:
+            ax=va[0]*w-cx; ay=va[1]*h-cy
+            bx=vb[0]*w-cx; by=vb[1]*h-cy
+            dot=ax*bx+ay*by+fpx*fpx
+            na=math.sqrt(ax*ax+ay*ay+fpx*fpx); nb=math.sqrt(bx*bx+by*by+fpx*fpx)
+            if na>1e-6 and nb>1e-6:
+                residual_angles.append(math.degrees(math.asin(min(1.0,abs(dot)/(na*nb)))))
+        solve_error=(sum(x*x for x in residual_angles)/len(residual_angles))**0.5 if residual_angles else None
+        return {'eq35':eq35,'base35':base35,'lo':lo,'hi':hi,'hfov':hfov,'vfov':vfov,'kind':kind,'confidence':confidence,'pairs':pairs,'spread':validation_spread,'reason':reason,'candidates':candidates,'autoq':autoq,'solve_error':solve_error}
 
     def update_lens_estimate(self):
         targets=[x for x in (getattr(self,'analysis_lens',None),getattr(self,'persp_lens',None)) if x is not None]
@@ -2491,8 +2512,8 @@ class MovieShotAnalyzer(QMainWindow):
         if not targets:
             return
         if not (self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2')):
-            for t in targets: t.setText('VP1 と VP2 を確定すると推定を開始します。')
-            for d in detail_targets: d.setText('2点透視を主推定、VP3は検証として使用します。')
+            for t in targets: t.setText('X と Z を確定するとカメラ推定を開始します。')
+            for d in detail_targets: d.setText('X/Zを主解、Y(up)を整合性検証に使用します。')
             return
         est=self.estimate_lens()
         if est is None:
@@ -2504,7 +2525,7 @@ class MovieShotAnalyzer(QMainWindow):
             f"有力レンジ： {est['lo']:.0f}–{est['hi']:.0f} mm\n"
             f"候補： {cand}\n"
             f"水平画角： 約 {est['hfov']:.1f}°  /  垂直画角： 約 {est['vfov']:.1f}°\n"
-            f"レンズ傾向： {est['kind']}  /  信頼度： {est['confidence']}"
+            f"レンズ傾向： {est['kind']}  /  信頼度： {est['confidence']}" + (f"\nSolve error： {est['solve_error']:.2f}°" if est.get('solve_error') is not None else '')
         )
         for t in targets: t.setText(lens_text)
         details=[]
