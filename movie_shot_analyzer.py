@@ -604,6 +604,7 @@ class ImageCanvas(QWidget):
         # aligned to the average direction of the two user calibration lines.
         if (base_pair_ready and self.owner._persp_axis_complete.get('vp3',False)
                 and self.owner._vp3_solver_state().get('mode')=='infinity'
+                and (not hasattr(self.owner,'show_rays_master') or self.owner.show_rays_master.isChecked())
                 and self.owner.vp_ray_visible.get('vp3',True)):
             lines=self.owner.perspective_lines.get('vp3',[])
             if len(lines)>=2:
@@ -642,7 +643,8 @@ class ImageCanvas(QWidget):
 
         for label,xy,color,key in vp_defs:
             ready = base_pair_ready and (key in ('vp1','vp2') or (self.owner._persp_axis_complete.get('vp3',False) and self.owner._vp3_solver_state().get('mode')=='finite'))
-            if not ready or not self.owner.vp_ray_visible.get(key,True):
+            master_on=(not hasattr(self.owner,'show_rays_master') or self.owner.show_rays_master.isChecked())
+            if not ready or not master_on or not self.owner.vp_ray_visible.get(key,True):
                 continue
             vp=self._image_norm_to_point(*xy); count=max(2,int(self.owner.vp_ray_counts.get(key,12)))
             rc=QColor(color); rc.setAlpha(round(255*self.owner.perspective_alpha.value()/100)); rp=QPen(rc); rp.setWidthF(self.owner.perspective_line_width.value.value()); p.setPen(rp)
@@ -1092,6 +1094,10 @@ class ImageCanvas(QWidget):
                     self.owner.solve_perspective_axis(name)
                     self.owner._persp_axis_complete[name]=True
                     self.owner.solve_perspective_axis(name)
+                    if hasattr(self.owner,'show_rays_master') and self.owner.show_rays_master.isChecked():
+                        self.owner.vp_ray_visible[name]=True
+                        if hasattr(self.owner,'vp_ray_checks') and name in self.owner.vp_ray_checks:
+                            self.owner.vp_ray_checks[name].setChecked(True)
                     # V5.30: collect the user's confirmed manual lines as learning data,
                     # without letting learning/autodetection touch the manual input engine.
                     if hasattr(self.owner,'learn_current_perspective'):
@@ -1120,6 +1126,10 @@ class ImageCanvas(QWidget):
                         self.owner._persp_axis_complete[name]=True
                         self.owner.perspective_step=1
                         self.owner.solve_perspective_axis(name)
+                        if hasattr(self.owner,'show_rays_master') and self.owner.show_rays_master.isChecked():
+                            self.owner.vp_ray_visible[name]=True
+                            if hasattr(self.owner,'vp_ray_checks') and name in self.owner.vp_ray_checks:
+                                self.owner.vp_ray_checks[name].setChecked(True)
                         self.owner.update_perspective_panel_state()
             self.owner.save_perspective()
             self.owner.refresh()
@@ -1127,7 +1137,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V6.0 Camera Calibration Solver'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V6.0.1 Reset & Ray Fix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -1175,7 +1185,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V6.0 / Camera Calibration Solver'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V6.0.1 / Reset & Ray Fix'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1258,7 +1268,7 @@ class MovieShotAnalyzer(QMainWindow):
         row=QHBoxLayout(); resetaxis=QPushButton('選択軸をリセット'); resetaxis.clicked.connect(self.reset_active_perspective_axis); resetall=QPushButton('全てリセット'); resetall.clicked.connect(self.reset_perspective); row.addWidget(resetaxis); row.addWidget(resetall); lay.addLayout(row)
         self.section(lay,'放射線（補助表示）')
         self.vp_ray_checks={}; self.vp_ray_count_labels={}; self.vp_ray_color_buttons={}
-        for key,label in [('vp1','X 放射線'),('vp2','Z 放射線'),('vp3','Y 放射線')]:
+        for key,label in [('vp1','X 放射線'),('vp2','Z 放射線'),('vp3','Y ガイド（∞時は平行）')]:
             row=QHBoxLayout()
             chk=QCheckBox(label); chk.setChecked(self.vp_ray_visible[key]); chk.toggled.connect(lambda v,k=key:self.set_vp_ray_visible(k,v)); row.addWidget(chk); self.vp_ray_checks[key]=chk
             minus=QPushButton('−'); minus.setFixedWidth(34); minus.clicked.connect(lambda checked=False,k=key:self.change_vp_ray_count(k,-1)); row.addWidget(minus)
@@ -1434,8 +1444,24 @@ class MovieShotAnalyzer(QMainWindow):
             else:
                 self.persp_step_label.setText(f'{lab} 2本目：短いエッジでもOK・離すと確定')
     def reset_active_perspective_axis(self):
-        defaults=self.default_perspective_lines(); name=self.active_perspective_axis
-        import copy; self.perspective_lines[name]=copy.deepcopy(defaults[name]); self._persp_axis_complete[name]=False; self._persp_anchor_touched[(name,0)]=set(); self._persp_anchor_touched.pop((name,1),None); self.perspective_step=0; self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
+        # Reset only the selected calibration axis.  Keep ray/grid visibility settings.
+        # Start from truly blank geometry so old handles/default lines cannot intercept
+        # the next pencil stroke or leave the axis in a half-complete state.
+        name=self.active_perspective_axis
+        self.perspective_lines[name]=[
+            [(0.5,0.5),(0.5,0.5)],
+            [(0.5,0.5),(0.5,0.5)]
+        ]
+        self._persp_axis_complete[name]=False
+        self._persp_anchor_touched[(name,0)]=set()
+        self._persp_anchor_touched.pop((name,1),None)
+        self.perspective_step=0
+        if name=='vp3':
+            self.vp3_at_infinity=False
+        self.update_perspective_panel_state()
+        self.update_perspective_labels()
+        self.save_perspective()
+        self.refresh()
 
     def _style(self):
         self.setStyleSheet('''QMainWindow,QWidget{background:#20242b;color:#e8edf3}#controlsWidget{background:#20242b}#controlScroll{border:1px solid #343a43;background:#20242b}#appTitle{font-size:20px;font-weight:700}#panelTitle{font-size:18px;font-weight:700}#rightPanel{background:#1b1f26;border:1px solid #343a43}QTabWidget::pane{border:1px solid #343a43;background:#1b1f26}QTabBar::tab{background:#272d36;border:1px solid #3e4652;padding:9px 12px;margin-right:2px}QTabBar::tab:selected{background:#2d6cdf;color:white}QPushButton:checked{background:#2d6cdf;border-color:#68a0ff;color:white}#subtitle,#note{color:#aeb7c4}#section{font-size:14px;font-weight:700;color:#d9e2ec;margin-top:8px;border-top:1px solid #3b424d;padding-top:8px}#fileLabel{background:#171a20;border:1px solid #343a43;border-radius:5px;padding:8px}QPushButton{background:#303641;border:1px solid #48505d;border-radius:5px;padding:7px}QPushButton:hover{background:#3a424f}#panelToggle{padding:2px;font-size:17px;font-weight:700;background:#252b34;border-radius:3px}QPushButton:disabled{color:#69717c;background:#272b32}QLabel{min-height:20px;padding-top:2px;padding-bottom:2px}QCheckBox{min-height:22px;padding:3px 1px}QDoubleSpinBox{background:#171a20;border:1px solid #48505d;padding:4px}QSlider::groove:horizontal{height:4px;background:#3b424d}QSlider::handle:horizontal{width:14px;margin:-5px 0;background:#8ab4f8;border-radius:7px}QScrollBar:vertical{background:#20242b;width:12px}QScrollBar::handle:vertical{background:#4a5260;min-height:28px;border-radius:5px}QStatusBar{background:#171a20;color:#aeb7c4}''')
