@@ -603,7 +603,7 @@ class ImageCanvas(QWidget):
         # Instead of a fan from a fake finite point, draw evenly spaced PARALLEL guides
         # aligned to the average direction of the two user calibration lines.
         if (base_pair_ready and self.owner._persp_axis_complete.get('vp3',False)
-                and getattr(self.owner,'vp3_at_infinity',False)
+                and self.owner._vp3_solver_state().get('mode')=='infinity'
                 and self.owner.vp_ray_visible.get('vp3',True)):
             lines=self.owner.perspective_lines.get('vp3',[])
             if len(lines)>=2:
@@ -641,7 +641,7 @@ class ImageCanvas(QWidget):
                         p.restore()
 
         for label,xy,color,key in vp_defs:
-            ready = base_pair_ready and (key in ('vp1','vp2') or (self.owner._persp_axis_complete.get('vp3',False) and not getattr(self.owner,'vp3_at_infinity',False)))
+            ready = base_pair_ready and (key in ('vp1','vp2') or (self.owner._persp_axis_complete.get('vp3',False) and self.owner._vp3_solver_state().get('mode')=='finite'))
             if not ready or not self.owner.vp_ray_visible.get(key,True):
                 continue
             vp=self._image_norm_to_point(*xy); count=max(2,int(self.owner.vp_ray_counts.get(key,12)))
@@ -1127,7 +1127,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.38 Camera Solver'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer V5.39 VP3 Solver'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         self.learning_enabled=True
@@ -1175,7 +1175,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('V5.38 / Camera Solver'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('V5.39 / VP3 Solver'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1250,7 +1250,7 @@ class MovieShotAnalyzer(QMainWindow):
             'vp1':'X軸方向。画像内の同じ実世界方向に沿う基準線を2本ドラッグします。',
             'vp2':'Z軸（奥行き）方向。同じ実世界方向に沿う基準線を2本ドラッグします。',
             'vp3':'Y軸（上方向・垂直）。同じ実世界方向に沿う基準線を2本ドラッグします。'}
-        for key,label in [('vp1','X'),('vp2','Z'),('vp3','Y (up)')]:
+        for key,label in [('vp1','X（水平方向）'),('vp2','Z（奥行き）'),('vp3','Y（垂直）')]:
             b=QPushButton(label); b.setCheckable(True); b.setToolTip(tips[key]); b.clicked.connect(lambda checked,k=key:self.set_perspective_axis(k)); axisrow.addWidget(b); self.axis_buttons[key]=b
         lay.addLayout(axisrow)
         self.persp_step_label=QLabel('1本目：画像上をドラッグして引く'); self.persp_step_label.setObjectName('fileLabel'); lay.addWidget(self.persp_step_label)
@@ -1258,7 +1258,7 @@ class MovieShotAnalyzer(QMainWindow):
         row=QHBoxLayout(); resetaxis=QPushButton('選択軸をリセット'); resetaxis.clicked.connect(self.reset_active_perspective_axis); resetall=QPushButton('全てリセット'); resetall.clicked.connect(self.reset_perspective); row.addWidget(resetaxis); row.addWidget(resetall); lay.addLayout(row)
         self.section(lay,'カメラ解グリッド')
         self.vp_ray_checks={}; self.vp_ray_count_labels={}; self.vp_ray_color_buttons={}
-        for key,label in [('vp1','X'),('vp2','Z'),('vp3','Y')]:
+        for key,label in [('vp1','X 水平'),('vp2','Z 奥行き'),('vp3','Y 垂直')]:
             row=QHBoxLayout()
             chk=QCheckBox(f'{label}軸'); chk.setChecked(self.vp_ray_visible[key]); chk.toggled.connect(lambda v,k=key:self.set_vp_ray_visible(k,v)); row.addWidget(chk); self.vp_ray_checks[key]=chk
             minus=QPushButton('−'); minus.setFixedWidth(34); minus.clicked.connect(lambda checked=False,k=key:self.change_vp_ray_count(k,-1)); row.addWidget(minus)
@@ -1279,7 +1279,7 @@ class MovieShotAnalyzer(QMainWindow):
         lr=QHBoxLayout(); learn_now=QPushButton('現在の手動パースを学習'); learn_now.clicked.connect(lambda:self.learn_current_perspective('manual')); lr.addWidget(learn_now); reset_learn=QPushButton('学習をリセット'); reset_learn.clicked.connect(self.reset_learning_data); lr.addWidget(reset_learn); lay.addLayout(lr)
         self.section(lay,'カメラ推定結果')
         self.persp_lens=QLabel('X と Z を確定するとカメラ推定を開始します。'); self.persp_lens.setObjectName('fileLabel'); self.persp_lens.setWordWrap(True); lay.addWidget(self.persp_lens)
-        self.persp_lens_detail=QLabel('X/Zを主解、Y(up)を整合性検証に使用します。'); self.persp_lens_detail.setObjectName('note'); self.persp_lens_detail.setWordWrap(True); lay.addWidget(self.persp_lens_detail)
+        self.persp_lens_detail=QLabel('X/Zを主解、Y（垂直）は有限VP/∞を自動判定して整合性検証します。'); self.persp_lens_detail.setObjectName('note'); self.persp_lens_detail.setWordWrap(True); lay.addWidget(self.persp_lens_detail)
         self.section(lay,'表示')
         row=QHBoxLayout(); row.addWidget(QLabel('作業領域')); self.workspace_scale=QSlider(Qt.Orientation.Horizontal); self.workspace_scale.setRange(100,400); self.workspace_scale.setValue(100); self.workspace_scale.valueChanged.connect(self.refresh); row.addWidget(self.workspace_scale,1); self.workspace_label=QLabel('100%'); self.workspace_label.setFixedWidth(46); self.workspace_scale.valueChanged.connect(lambda v:self.workspace_label.setText(f'{v}%')); row.addWidget(self.workspace_label); lay.addLayout(row)
         row=QHBoxLayout(); row.addWidget(QLabel('ホイールズーム')); self.zoom_label=QLabel('100%'); row.addWidget(self.zoom_label); zreset=QPushButton('100%'); zreset.clicked.connect(self.reset_zoom); row.addWidget(zreset); lay.addLayout(row)
@@ -2348,6 +2348,64 @@ class MovieShotAnalyzer(QMainWindow):
             ux=-ux; uy=-uy
         return (ux,uy)
 
+    def _vp3_solver_state(self):
+        """Classify Y/up axis as finite VP or infinity and derive camera-consistent direction."""
+        lines=self.perspective_lines.get('vp3',[])
+        result={'mode':'unset','angle_deg':None,'direction':None,'finite_vp':None,'residual_deg':None}
+        if len(lines)<2:
+            return result
+
+        def unit(line):
+            (x1,y1),(x2,y2)=line
+            dx=x2-x1; dy=y2-y1
+            n=max(1e-9,math.hypot(dx,dy))
+            return dx/n,dy/n
+
+        u1=unit(lines[0]); u2=unit(lines[1])
+        dot=max(-1.0,min(1.0,abs(u1[0]*u2[0]+u1[1]*u2[1])))
+        delta=math.degrees(math.acos(dot))
+        result['angle_deg']=delta
+
+        # Camera-consistent Y direction inferred from solved X/Z horizon.
+        try:
+            cu=self._camera_consistent_vp3_direction()
+            cn=max(1e-9,math.hypot(cu[0],cu[1]))
+            cu=(cu[0]/cn,cu[1]/cn)
+        except Exception:
+            cu=(0.0,1.0)
+        result['direction']=cu
+
+        # Nearly parallel calibration lines => VP at infinity.
+        # Keep threshold conservative so clearly converging Y lines still create a finite VP.
+        if delta < 2.25:
+            result['mode']='infinity'
+            # residual between user's average Y direction and camera-consistent Y.
+            sx=u1[0]+u2[0]; sy=u1[1]+u2[1]
+            if math.hypot(sx,sy)<1e-9:
+                avg=u1
+            else:
+                n=math.hypot(sx,sy); avg=(sx/n,sy/n)
+            d=max(-1.0,min(1.0,abs(avg[0]*cu[0]+avg[1]*cu[1])))
+            result['residual_deg']=math.degrees(math.acos(d))
+            return result
+
+        # Otherwise finite VP is valid if already solved by the existing robust line intersection.
+        result['mode']='finite'
+        result['finite_vp']=self.vp3
+        # For finite VP, compare local direction from image center to VP against camera-consistent Y.
+        try:
+            w=float(self.original.width); h=float(self.original.height)
+            vx=self.vp3[0]*w-w*0.5; vy=self.vp3[1]*h-h*0.5
+            n=math.hypot(vx,vy)
+            if n>1e-9:
+                vv=(vx/n,vy/n)
+                d=max(-1.0,min(1.0,abs(vv[0]*cu[0]+vv[1]*cu[1])))
+                result['residual_deg']=math.degrees(math.acos(d))
+        except Exception:
+            pass
+        return result
+
+
     def solve_perspective_axis(self,name):
         lines=self.perspective_lines.get(name,[])
         if len(lines)<2:return False
@@ -2504,6 +2562,13 @@ class MovieShotAnalyzer(QMainWindow):
             if na>1e-6 and nb>1e-6:
                 residual_angles.append(math.degrees(math.asin(min(1.0,abs(dot)/(na*nb)))))
         solve_error=(sum(x*x for x in residual_angles)/len(residual_angles))**0.5 if residual_angles else None
+        try:
+            ystate=self._vp3_solver_state()
+            yres=ystate.get('residual_deg')
+            if yres is not None:
+                solve_error=((solve_error or 0.0)**2 + yres**2)**0.5
+        except Exception:
+            pass
         return {'eq35':eq35,'base35':base35,'lo':lo,'hi':hi,'hfov':hfov,'vfov':vfov,'kind':kind,'confidence':confidence,'pairs':pairs,'spread':validation_spread,'reason':reason,'candidates':candidates,'autoq':autoq,'solve_error':solve_error}
 
     def update_lens_estimate(self):
@@ -2513,7 +2578,7 @@ class MovieShotAnalyzer(QMainWindow):
             return
         if not (self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2')):
             for t in targets: t.setText('X と Z を確定するとカメラ推定を開始します。')
-            for d in detail_targets: d.setText('X/Zを主解、Y(up)を整合性検証に使用します。')
+            for d in detail_targets: d.setText('X/Zを主解、Y（垂直）は有限VP/∞を自動判定して整合性検証します。')
             return
         est=self.estimate_lens()
         if est is None:
