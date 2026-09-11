@@ -1044,7 +1044,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — Camera Calibration Solver v1.3'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — Camera Calibration Solver v1.3.1 VP3 Stable'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         # Pure Manual Perspective: no automatic-analysis data and no learning data
@@ -1849,6 +1849,16 @@ class MovieShotAnalyzer(QMainWindow):
         w=float(self.original.width); h=float(self.original.height)
         cx0=w*0.5; cy0=h*0.5
 
+        # VP3 stability rule:
+        # Once X + Z are complete, they define the core camera.
+        # Confirming Y/VP3 must NOT re-optimise principal point/focal length or move X/Z.
+        # Y is derived orthogonally from the locked X/Z solution; the drawn VP3 is used
+        # only to choose the Y sign and to report fit error.
+        lock_xz = bool(
+            self._persp_axis_complete.get('vp1',False)
+            and self._persp_axis_complete.get('vp2',False)
+        )
+
         # Initial focal estimate from any finite orthogonal pair using the centered-principal-point formula.
         f_candidates=[]
         for i,k1 in enumerate(complete):
@@ -1885,7 +1895,21 @@ class MovieShotAnalyzer(QMainWindow):
             e+=0.002*((cy-cy0)/max(h,1.0))**2
             return e
 
-        if len(complete)>=3:
+        if lock_xz:
+            # Preserve the exact same core solution used before VP3 was confirmed.
+            # With X/Z the principal point stays at image centre and focal length is
+            # obtained from the orthogonal X/Z pair.
+            cx,cy=cx0,cy0
+            qx,qz=obs.get('vp1'),obs.get('vp2')
+            fxz=None
+            if qx is not None and qz is not None and abs(float(qx[2]))>=1e-8 and abs(float(qz[2]))>=1e-8:
+                vx=(float(qx[0]/qx[2]),float(qx[1]/qx[2]))
+                vz=(float(qz[0]/qz[2]),float(qz[1]/qz[2]))
+                f2=-((vx[0]-cx0)*(vz[0]-cx0)+(vx[1]-cy0)*(vz[1]-cy0))
+                if math.isfinite(f2) and f2>25.0:
+                    fxz=math.sqrt(f2)
+            f=max(0.12*w,min(8*w,fxz if fxz is not None else f0))
+        elif len(complete)>=3:
             best=(objective(cx0,cy0,f0),cx0,cy0,max(0.12*w,min(8*w,f0)))
             # Coarse search.
             for ox in (-0.15,-0.075,0.0,0.075,0.15):
@@ -1896,7 +1920,6 @@ class MovieShotAnalyzer(QMainWindow):
                         if val<best[0]:
                             best=(val,cx,cy,f)
             _,cx,cy,f=best
-            # Pattern search refinement.
             sx,sy,sf=0.06*w,0.06*h,0.22
             for _ in range(42):
                 improved=False
@@ -1922,29 +1945,43 @@ class MovieShotAnalyzer(QMainWindow):
         # Back-project observed directions with solved K.
         raw={k:self._camera_dir_from_h(obs[k],cx,cy,f) for k in complete}
 
-        # Fit the nearest orthonormal set to the observed world-axis directions.
-        # World order is X, Y(up), Z; internal keys are vp1, vp3, vp2.
-        world_order=['vp1','vp3','vp2']
-        present=[k for k in world_order if k in raw]
-        M=np.column_stack([raw[k] for k in present])
-        U,_,Vt=np.linalg.svd(M,full_matrices=False)
-        Q=U@Vt
-        solved_dirs={k:Q[:,i] for i,k in enumerate(present)}
+        if lock_xz and 'vp1' in raw and 'vp2' in raw:
+            # Fit ONLY X/Z, exactly as in the stable two-axis state.
+            present=['vp1','vp2']
+            M=np.column_stack([raw[k] for k in present])
+            U,_,Vt=np.linalg.svd(M,full_matrices=False)
+            Q=U@Vt
+            solved_dirs={k:Q[:,i] for i,k in enumerate(present)}
+            x=solved_dirs['vp1']; z=solved_dirs['vp2']
+            y=np.cross(z,x); y/=max(1e-12,float(np.linalg.norm(y)))
 
-        # If only X and Z are present, derive a coherent Y direction for the grid.
-        if len(present)==2:
-            if set(present)=={'vp1','vp2'}:
-                x=solved_dirs['vp1']; z=solved_dirs['vp2']
-                y=np.cross(z,x); y/=max(1e-12,float(np.linalg.norm(y)))
-                solved_dirs['vp3']=y
-            elif set(present)=={'vp1','vp3'}:
-                x=solved_dirs['vp1']; y=solved_dirs['vp3']
-                z=np.cross(x,y); z/=max(1e-12,float(np.linalg.norm(z)))
-                solved_dirs['vp2']=z
-            elif set(present)=={'vp2','vp3'}:
-                z=solved_dirs['vp2']; y=solved_dirs['vp3']
-                x=np.cross(y,z); x/=max(1e-12,float(np.linalg.norm(x)))
-                solved_dirs['vp1']=x
+            # VP3 observation may choose which end of the same Y axis is labelled positive,
+            # but it cannot rotate X/Z or change focal length.
+            if 'vp3' in raw and float(np.dot(y,raw['vp3'])) < 0.0:
+                y=-y
+            solved_dirs['vp3']=y
+        else:
+            # Generic fallback for non-standard axis-order workflows.
+            world_order=['vp1','vp3','vp2']
+            present=[k for k in world_order if k in raw]
+            M=np.column_stack([raw[k] for k in present])
+            U,_,Vt=np.linalg.svd(M,full_matrices=False)
+            Q=U@Vt
+            solved_dirs={k:Q[:,i] for i,k in enumerate(present)}
+
+            if len(present)==2:
+                if set(present)=={'vp1','vp2'}:
+                    x=solved_dirs['vp1']; z=solved_dirs['vp2']
+                    y=np.cross(z,x); y/=max(1e-12,float(np.linalg.norm(y)))
+                    solved_dirs['vp3']=y
+                elif set(present)=={'vp1','vp3'}:
+                    x=solved_dirs['vp1']; y=solved_dirs['vp3']
+                    z=np.cross(x,y); z/=max(1e-12,float(np.linalg.norm(z)))
+                    solved_dirs['vp2']=z
+                elif set(present)=={'vp2','vp3'}:
+                    z=solved_dirs['vp2']; y=solved_dirs['vp3']
+                    x=np.cross(y,z); x/=max(1e-12,float(np.linalg.norm(x)))
+                    solved_dirs['vp1']=x
 
         projected={k:self._project_camera_dir(d,cx,cy,f) for k,d in solved_dirs.items()}
 

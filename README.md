@@ -1,22 +1,17 @@
-# Movie Shot Analyzer — Camera Calibration Solver v1.3
+# Movie Shot Analyzer — Camera Calibration Solver v1.3.1 VP3 Stable
 
-ベース: v1.2 Lens Fix
+v1.3 の操作系・レンズ比較を維持した VP3 安定化版です。
 
-## v1.3
-- H: 手のひらツールを固定ON/OFF
-- Spaceを押している間: 一時的に手のひらツール
-- 手のひら中の左ドラッグ: 画像ビューをパン
-- パンは表示だけを移動し、パース座標・VP・レンズ計算は変更しない
-- Ctrl+Z / Cmd+Z: 手動パースを1操作Undo
-- Ctrl+Shift+Z / Cmd+Shift+Z: Redo
-- X→Z→Yの途中でも、直前の線へ戻って引き直せる
-- Undo/Redo後はCamera Solver・グリッド・レンズ表示を再計算
-- レンズ欄に「旧方式比較」を追加
-- 現在のX/Z独立推定、旧方式比較、Camera Solver側を比較可能
-- v1.2のレンズ感度レンジを維持
+## 修正
+- X軸 + Z軸が確定した時点のカメラ解をコアとして固定
+- VP3/Y軸を確定しても X/Z の消失点・グリッド・焦点距離を再最適化しない
+- VP3 は Y軸の向き（符号）選択と Solve error の検証に使用
+- これにより VP3 確定直後に X/Z グリッド全体が大きく回転・崩れる現象を防止
 
-## FIX
-- パースCamera Solver本体の数式は変更していません
-- パースグリッド間隔の計算は変更していません
-- 自動パース判定データは使用しません
-- __pycache__ は配布ZIPに含めません
+## 維持
+- Space: 一時手のひら
+- H: 手のひら固定
+- Ctrl/Cmd+Z: パースUndo
+- Ctrl/Cmd+Shift+Z: Redo
+- X/Z raw・旧方式・Camera Solver のレンズ比較
+- 自動パース判定データなし
