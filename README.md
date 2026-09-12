@@ -52,3 +52,11 @@ Artifact `MovieShotAnalyzer-Windows` の中には `MovieShotAnalyzer.exe` が直
 - The line-1 safety copy is updated after edits, preventing an older line 1 from being restored accidentally.
 - Solved VP markers remain directly draggable.
 - Lens architecture remains unchanged: X+Z drive lens/FOV; Y/VP3 is an independent drawing-perspective guide.
+
+## v1.6 Lens Stability / Integrated UI
+- Removed the separate 「ショット分析」 tab; perspective and lens analysis now live together in 「パース・レンズ」.
+- Lens confidence now tests the *drawn X/Z guide angles*, not just a few-pixel VP jitter.
+- Near-parallel guide pairs / very distant VPs are automatically downgraded to low confidence.
+- Low-confidence results show a warning and a sensitivity range rather than presenting a narrow high-confidence range.
+- Y/VP3 remains independent drawing perspective and never changes lens/FOV.
+- v1.5 four-point editable calibration and draggable VP behavior are preserved.

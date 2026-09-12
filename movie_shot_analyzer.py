@@ -1244,7 +1244,7 @@ class MovieShotAnalyzer(QMainWindow):
         panel=QWidget(); panel.setObjectName('rightPanel'); panel.setMinimumWidth(350); panel.setMaximumWidth(430); self.right_panel=panel
         r=QVBoxLayout(panel); r.setContentsMargins(8,8,8,8); r.setSpacing(6)
         self.right_tabs=QTabWidget(); self.right_tabs.setObjectName('rightTabs'); r.addWidget(self.right_tabs)
-        self._build_perspective_tab(); self._build_composition_tab(); self._build_analysis_tab()
+        self._build_perspective_tab(); self._build_composition_tab()
         outer.addWidget(panel,0)
 
     def _build_perspective_tab(self):
@@ -1317,18 +1317,6 @@ class MovieShotAnalyzer(QMainWindow):
         grid=QGridLayout(); grid.addWidget(QLabel('○サイズ'),0,0); self.point_size=StepControl(2.0,30.0,8.0,0.5); self.point_size.value.valueChanged.connect(self.refresh); grid.addWidget(self.point_size,0,1); c.addLayout(grid)
         row=QHBoxLayout(); pc=QPushButton('○の色'); pc.clicked.connect(self.choose_point_color); row.addWidget(pc); row.addStretch(1); c.addLayout(row)
         c.addStretch(1); sc.setWidget(body); outer.addWidget(sc); self.right_tabs.addTab(tab,'構図ガイド')
-
-    def _build_analysis_tab(self):
-        tab=QWidget(); lay=QVBoxLayout(tab); lay.setContentsMargins(10,10,10,10); lay.setSpacing(8)
-        self.section(lay,'ショット分析')
-        self.analysis_summary=QLabel('構図・パース・レンズの結果を現在の1カットについてまとめます。'); self.analysis_summary.setObjectName('fileLabel'); self.analysis_summary.setWordWrap(True); lay.addWidget(self.analysis_summary)
-        self.analysis_lens=QLabel('レンズ推定は「パース・レンズ」タブに統合しました。'); self.analysis_lens.setObjectName('note'); self.analysis_lens.setWordWrap(True); lay.addWidget(self.analysis_lens)
-        self.lens_detail=QLabel(''); self.lens_detail.setObjectName('note'); self.lens_detail.setWordWrap(True); self.lens_detail.setVisible(False); lay.addWidget(self.lens_detail)
-        self.section(lay,'パース結果')
-        self.analysis_perspective=QLabel('VP1 / VP2 / VP3 / Eye Level'); self.analysis_perspective.setObjectName('note'); self.analysis_perspective.setWordWrap(True); lay.addWidget(self.analysis_perspective)
-        self.section(lay,'構図タイプ候補')
-        lbl=QLabel('Balance / Unbalanced、フレーム内フレーム、視線誘導など、固定ガイドだけでは判断できない項目は後段の画像判定で扱います。'); lbl.setObjectName('note'); lbl.setWordWrap(True); lay.addWidget(lbl)
-        lay.addStretch(1); self.right_tabs.addTab(tab,'ショット分析')
 
     def set_vp_ray_visible(self,key,value):
         self.vp_ray_visible[key]=bool(value); self.refresh()
@@ -2137,34 +2125,83 @@ class MovieShotAnalyzer(QMainWindow):
             'vp1':a,'vp2':b,
         }
 
-    def _lens_sensitivity_range(self, samples=96):
-        """Sensitivity of the current X/Z VP solution to a few pixels of VP movement.
+    def _axis_base_angle_deg(self, name):
+        """Acute angle between the two manually drawn base lines.
 
-        v1.4 uses the current draggable VP markers as authoritative. This avoids
-        reporting a confidence range based on old calibration strokes after the artist
-        has manually fine-tuned a vanishing point.
+        A very small angle means the VP is extremely far away and focal-length
+        recovery becomes ill-conditioned even when a numerical solution exists.
         """
         if self.original is None:return None
-        a=self._manual_axis_vp_normalized('vp1'); b=self._manual_axis_vp_normalized('vp2')
-        if a is None or b is None:return None
+        lines=self.perspective_lines.get(name,[])[:2]
+        if len(lines)<2:return None
+        vec=[]
         w=float(self.original.width); h=float(self.original.height)
-        if w<2 or h<2:return None
-        sx=min(4.0/max(w,1.0),0.004); sy=min(4.0/max(h,1.0),0.004)
-        vals=[]; rng=random.Random(137)
-        for _ in range(max(24,int(samples))):
-            va=(a[0]+rng.gauss(0,sx),a[1]+rng.gauss(0,sy))
-            vb=(b[0]+rng.gauss(0,sx),b[1]+rng.gauss(0,sy))
+        for seg in lines:
+            dx=(seg[1][0]-seg[0][0])*w; dy=(seg[1][1]-seg[0][1])*h
+            n=math.hypot(dx,dy)
+            if n<1e-8:return None
+            vec.append((dx/n,dy/n))
+        dot=max(-1.0,min(1.0,abs(vec[0][0]*vec[1][0]+vec[0][1]*vec[1][1])))
+        return math.degrees(math.acos(dot))
+
+    def _rotate_segment(self, seg, angle_deg):
+        """Rotate a normalized image segment around its midpoint in pixel space."""
+        w=float(self.original.width); h=float(self.original.height)
+        x1,y1=seg[0][0]*w,seg[0][1]*h; x2,y2=seg[1][0]*w,seg[1][1]*h
+        mx=(x1+x2)*0.5; my=(y1+y2)*0.5
+        a=math.radians(angle_deg); ca=math.cos(a); sa=math.sin(a)
+        out=[]
+        for x,y in ((x1,y1),(x2,y2)):
+            dx=x-mx; dy=y-my
+            rx=mx+dx*ca-dy*sa; ry=my+dx*sa+dy*ca
+            out.append((rx/w,ry/h))
+        return out
+
+    def _vp_from_two_segments(self, seg1, seg2):
+        q=self._robust_vp_from_segments([seg1,seg2])
+        if q is None or self.original is None:return None
+        scale=max(1.0,math.hypot(float(q[0]),float(q[1])))
+        if abs(float(q[2])) < 1e-7*scale:return None
+        w=float(self.original.width); h=float(self.original.height)
+        return (float(q[0]/q[2])/w,float(q[1]/q[2])/h)
+
+    def _lens_sensitivity_range(self, samples=160):
+        """Estimate practical lens uncertainty by perturbing the drawn guide angles.
+
+        Pixel-jittering an already-computed VP badly understates uncertainty when the
+        source lines are nearly parallel.  Instead perturb each of the four X/Z base
+        strokes by a small angular amount and solve the VPs again.
+        """
+        if self.original is None:return None
+        if not (self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2')):return None
+        lx=self.perspective_lines.get('vp1',[])[:2]; lz=self.perspective_lines.get('vp2',[])[:2]
+        if len(lx)<2 or len(lz)<2:return None
+        w=float(self.original.width)
+        vals=[]; failed=0; rng=random.Random(137)
+        # 0.20 degree 1-sigma approximates the small visual adjustment an artist makes
+        # when choosing an edge. Near-parallel lines naturally amplify this strongly.
+        sigma_deg=0.20
+        for _ in range(max(48,int(samples))):
+            px=[self._rotate_segment(seg,rng.gauss(0,sigma_deg)) for seg in lx]
+            pz=[self._rotate_segment(seg,rng.gauss(0,sigma_deg)) for seg in lz]
+            va=self._vp_from_two_segments(px[0],px[1]); vb=self._vp_from_two_segments(pz[0],pz[1])
+            if va is None or vb is None:
+                failed+=1; continue
             fpx=self._pair_focal_pixels(va,vb)
-            if fpx is None or not math.isfinite(fpx):continue
+            if fpx is None or not math.isfinite(fpx):
+                failed+=1; continue
             eq35=36.0*fpx/w
             if 4.0<=eq35<=400.0:vals.append(eq35)
-        if len(vals)<12:return None
+            else: failed+=1
+        if len(vals)<12:return {'unstable':True,'failed_ratio':1.0,'n':len(vals)}
         vals=sorted(vals)
         def q(frac):
             pos=(len(vals)-1)*frac; lo=int(math.floor(pos)); hi=int(math.ceil(pos))
             if lo==hi:return vals[lo]
             t=pos-lo; return vals[lo]*(1-t)+vals[hi]*t
-        return {'p10':q(0.10),'p50':q(0.50),'p90':q(0.90),'spread':q(0.90)-q(0.10),'n':len(vals)}
+        return {'p10':q(0.10),'p50':q(0.50),'p90':q(0.90),'spread':q(0.90)-q(0.10),
+                'n':len(vals),'failed_ratio':failed/max(1,failed+len(vals)),'unstable':False,
+                'x_angle':self._axis_base_angle_deg('vp1'),'z_angle':self._axis_base_angle_deg('vp2')}
 
     def _pair_focal_pixels(self, a, b):
         """Focal length in pixels from an orthogonal VP pair with principal point at image center."""
@@ -2209,21 +2246,25 @@ class MovieShotAnalyzer(QMainWindow):
                 camera_eq=None
 
         sens=self._lens_sensitivity_range()
-        if sens is not None:
-            lo=max(4.0,float(sens['p10']))
-            hi=float(sens['p90'])
-            rel=(hi-lo)/max(eq35,1e-6)
-            if rel < 0.18:
+        instability_reason=None
+        if sens is not None and not sens.get('unstable',False):
+            lo=max(4.0,float(sens['p10'])); hi=float(sens['p90'])
+            rel=(hi-lo)/max(eq35,1e-6); fail=float(sens.get('failed_ratio',0.0))
+            minang=min(x for x in (sens.get('x_angle'),sens.get('z_angle')) if x is not None) if any(x is not None for x in (sens.get('x_angle'),sens.get('z_angle'))) else 99.0
+            if minang < 0.45:
+                lens_conf='低'; instability_reason='基準線がほぼ平行で、消失点が極端に遠いため推定が不安定'
+            elif rel < 0.20 and fail < 0.08 and minang >= 1.2:
                 lens_conf='高'
-            elif rel < 0.40:
+            elif rel < 0.45 and fail < 0.25 and minang >= 0.65:
                 lens_conf='中'
             else:
-                lens_conf='低'
+                lens_conf='低'; instability_reason='基準線のわずかな角度差で焦点距離が大きく変動'
+        elif sens is not None:
+            lo=max(4.0,eq35*0.55); hi=eq35*1.65; lens_conf='低'
+            instability_reason='微小な基準線変化でレンズ解が成立しない場合が多い'
         else:
-            # Conservative fallback: do not equate camera Solve error with lens confidence.
-            lo=max(4.0,eq35*0.78)
-            hi=eq35*1.22
-            lens_conf='中'
+            lo=max(4.0,eq35*0.70); hi=eq35*1.35; lens_conf='低'
+            instability_reason='入力感度を十分に評価できない'
 
         # Compare Camera Solver f only as a diagnostic.
         camera_delta=None
@@ -2263,6 +2304,7 @@ class MovieShotAnalyzer(QMainWindow):
             'camera_eq35':camera_eq,
             'legacy_eq35':legacy_eq,
             'sensitivity':sens,
+            'instability_reason':instability_reason,
         }
 
     def update_lens_estimate(self):
@@ -2281,8 +2323,10 @@ class MovieShotAnalyzer(QMainWindow):
         cand=' / '.join(f'{x}mm' for x in est['candidates'])
         lens_text=(
             f"{est['eq35']:.1f}mm eq.   H-FOV {est['hfov']:.1f}°\n"
-            f"推定範囲 {est['lo']:.0f}–{est['hi']:.0f}mm   {est['kind']}   信頼度：{est['confidence']}"
+            f"感度範囲 {est['lo']:.0f}–{est['hi']:.0f}mm   {est['kind']}   信頼度：{est['confidence']}"
         )
+        if est.get('instability_reason'):
+            lens_text += f"\n⚠ {est['instability_reason']}"
         for t in targets: t.setText(lens_text)
         details=[]
         for label,val in est['pairs']:
@@ -2293,8 +2337,10 @@ class MovieShotAnalyzer(QMainWindow):
         if est.get('camera_eq35') is not None:
             details.append(f"現在VP解: {est['camera_eq35']:.1f}mm相当")
         sens=est.get('sensitivity')
-        if sens is not None:
-            details.append(f"入力感度: {sens['p10']:.1f}–{sens['p90']:.1f}mm（10–90%）")
+        if sens is not None and not sens.get('unstable',False):
+            details.append(f"角度感度: {sens['p10']:.1f}–{sens['p90']:.1f}mm（10–90%） / 解失敗 {sens.get('failed_ratio',0)*100:.0f}%")
+            if sens.get('x_angle') is not None and sens.get('z_angle') is not None:
+                details.append(f"基準線交差角: X {sens['x_angle']:.2f}° / Z {sens['z_angle']:.2f}°")
         details.append(f"判定理由: {est['reason']}")
         detail_text=' / '.join(details)
         detail_text += '\n※ Y/VP3を動かしてもレンズ値は変化しません。'
