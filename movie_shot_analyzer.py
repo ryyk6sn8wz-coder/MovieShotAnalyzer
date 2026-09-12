@@ -1275,6 +1275,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.section(lay,'カメラ / レンズ')
         self.persp_lens=QLabel('X＋Zを確定するとレンズ推定を開始します。'); self.persp_lens.setObjectName('fileLabel'); self.persp_lens.setWordWrap(True); self.persp_lens.setMinimumWidth(0); lay.addWidget(self.persp_lens)
         self.camera_solve_label=QLabel('主点：画像中央 / Yは作画用として独立'); self.camera_solve_label.setObjectName('note'); self.camera_solve_label.setWordWrap(True); lay.addWidget(self.camera_solve_label)
+        self.shot_analysis=QLabel('ショット分析：X＋Z確定後に表示します。'); self.shot_analysis.setObjectName('fileLabel'); self.shot_analysis.setWordWrap(True); self.shot_analysis.setMinimumWidth(0); lay.addWidget(self.shot_analysis)
         row=QHBoxLayout(); solve_btn=QPushButton('再計算'); solve_btn.clicked.connect(self.solve_camera_calibration); row.addWidget(solve_btn); self.persp_detail_toggle=QPushButton('詳細 ▼'); self.persp_detail_toggle.setCheckable(True); self.persp_detail_toggle.toggled.connect(self.toggle_perspective_details); row.addWidget(self.persp_detail_toggle); lay.addLayout(row)
         self.persp_detail_widget=QWidget(); detail_lay=QVBoxLayout(self.persp_detail_widget); detail_lay.setContentsMargins(0,0,0,0); detail_lay.setSpacing(4); self.persp_label=QLabel('未解決'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); detail_lay.addWidget(self.persp_label); self.persp_lens_detail=QLabel('レンズはX/Zの現在VPのみを使用。Y/VP3はレンズ値を変更しません。'); self.persp_lens_detail.setObjectName('note'); self.persp_lens_detail.setWordWrap(True); detail_lay.addWidget(self.persp_lens_detail); self.persp_detail_widget.setVisible(False); lay.addWidget(self.persp_detail_widget)
         self.section(lay,'表示')
@@ -2193,15 +2194,24 @@ class MovieShotAnalyzer(QMainWindow):
             eq35=36.0*fpx/w
             if 4.0<=eq35<=400.0:vals.append(eq35)
             else: failed+=1
-        if len(vals)<12:return {'unstable':True,'failed_ratio':1.0,'n':len(vals)}
         vals=sorted(vals)
         def q(frac):
+            if not vals:return None
             pos=(len(vals)-1)*frac; lo=int(math.floor(pos)); hi=int(math.ceil(pos))
             if lo==hi:return vals[lo]
             t=pos-lo; return vals[lo]*(1-t)+vals[hi]*t
-        return {'p10':q(0.10),'p50':q(0.50),'p90':q(0.90),'spread':q(0.90)-q(0.10),
-                'n':len(vals),'failed_ratio':failed/max(1,failed+len(vals)),'unstable':False,
-                'x_angle':self._axis_base_angle_deg('vp1'),'z_angle':self._axis_base_angle_deg('vp2')}
+        base={'n':len(vals),'failed_ratio':failed/max(1,failed+len(vals)),
+              'x_angle':self._axis_base_angle_deg('vp1'),'z_angle':self._axis_base_angle_deg('vp2')}
+        # Even when the exact X/Z pair has no valid focal solution, keep a cautious
+        # ensemble tendency if enough tiny guide-angle perturbations produce solutions.
+        # This is used only for a qualitative 'lens feel', never as an exact focal length.
+        if len(vals)<12:
+            base.update({'unstable':True})
+            if len(vals)>=4:
+                base.update({'p10':q(0.10),'p50':q(0.50),'p90':q(0.90),'spread':q(0.90)-q(0.10)})
+            return base
+        base.update({'p10':q(0.10),'p50':q(0.50),'p90':q(0.90),'spread':q(0.90)-q(0.10),'unstable':False})
+        return base
 
     def _pair_focal_pixels(self, a, b):
         """Focal length in pixels from an orthogonal VP pair with principal point at image center."""
@@ -2307,6 +2317,31 @@ class MovieShotAnalyzer(QMainWindow):
             'instability_reason':instability_reason,
         }
 
+    def _shot_analysis_text(self, eq35=None, hfov=None, confidence=None, fallback_feel=None):
+        """Artist-facing shot/lens interpretation.
+
+        This intentionally does not pretend to infer CU/MS/LS from focal length alone.
+        Shot size depends on subject framing, while perspective/ compression can be
+        described from FOV/lens geometry.
+        """
+        if hfov is None and eq35 is not None and eq35 > 0:
+            hfov=math.degrees(2.0*math.atan(36.0/(2.0*eq35)))
+        if hfov is not None and math.isfinite(hfov):
+            if hfov >= 75:
+                persp='かなり強い'; compression='かなり弱い'; feel='超広角'
+            elif hfov >= 58:
+                persp='強い'; compression='弱い'; feel='広角'
+            elif hfov >= 40:
+                persp='標準'; compression='標準'; feel='標準'
+            elif hfov >= 24:
+                persp='弱い'; compression='強い'; feel='中望遠'
+            else:
+                persp='かなり弱い'; compression='かなり強い'; feel='望遠'
+            conf=f' / 判定信頼度：{confidence}' if confidence else ''
+            return f'ショット分析　レンズ感：{feel}{conf}\nパース感：{persp}　圧縮感：{compression}\nショットサイズ：被写体の画面占有率とは別判定'
+        feel=fallback_feel or '判定困難'
+        return f'ショット分析　レンズ感：{feel}（参考）\nパース感 / 圧縮感：数値判定保留\nショットサイズ：被写体の画面占有率とは別判定'
+
     def update_lens_estimate(self):
         targets=[x for x in (getattr(self,'analysis_lens',None),getattr(self,'persp_lens',None)) if x is not None]
         detail_targets=[x for x in (getattr(self,'lens_detail',None),getattr(self,'persp_lens_detail',None)) if x is not None]
@@ -2315,10 +2350,36 @@ class MovieShotAnalyzer(QMainWindow):
         if not (self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2')):
             for t in targets: t.setText('VP1 と VP2 を確定すると推定を開始します。')
             for d in detail_targets: d.setText('X/Zの2消失点から推定。Y/VP3は作画用でレンズ計算には使用しません。')
+            if hasattr(self,'shot_analysis'): self.shot_analysis.setText('ショット分析：X＋Z確定後に表示します。')
             return
         est=self.estimate_lens()
         if est is None:
-            for t in targets: t.setText('レンズ推定不可\nX/Zの現在VPでは、主点=画像中央の直交2VPモデルが成立しません。VPを微調整してください。')
+            # Exact focal length can fail when one direction is effectively at infinity.
+            # Still provide an explicitly qualitative fallback from the sensitivity
+            # ensemble, so the artist gets useful lens-feel guidance without false mm precision.
+            sens=self._lens_sensitivity_range(samples=240)
+            feel='判定困難'
+            feel_range=None
+            if sens is not None and sens.get('p50') is not None:
+                mid=float(sens['p50']); lo=float(sens.get('p10',mid)); hi=float(sens.get('p90',mid))
+                def k(mm):
+                    if mm < 20:return '超広角'
+                    if mm < 35:return '広角'
+                    if mm < 60:return '標準'
+                    if mm < 100:return '中望遠'
+                    return '望遠'
+                kl,km,kh=k(lo),k(mid),k(hi)
+                feel=km if kl==kh else f'{kl}〜{kh}寄り'
+                feel_range=(lo,hi)
+            ax=sens.get('x_angle') if sens else None; az=sens.get('z_angle') if sens else None
+            near_inf=any(a is not None and a < 0.45 for a in (ax,az))
+            reason='一方のVPがほぼ無限遠で数値推定が不安定' if near_inf else '現在のX/Zでは直交2VPの焦点距離解が安定しない'
+            txt=f'焦点距離：推定不可\nレンズ感（参考）：{feel}\n{reason}'
+            if feel_range is not None:
+                txt+=f'\n参考感度 {feel_range[0]:.0f}–{feel_range[1]:.0f}mm相当（数値確定には使用しません）'
+            for t in targets:t.setText(txt)
+            for d in detail_targets:d.setText('X/Zの微小角度変化からレンズ感だけを参考表示。Y/VP3はレンズ判定に使用しません。')
+            if hasattr(self,'shot_analysis'): self.shot_analysis.setText(self._shot_analysis_text(fallback_feel=feel))
             return
         cand=' / '.join(f'{x}mm' for x in est['candidates'])
         lens_text=(
@@ -2328,6 +2389,7 @@ class MovieShotAnalyzer(QMainWindow):
         if est.get('instability_reason'):
             lens_text += f"\n⚠ {est['instability_reason']}"
         for t in targets: t.setText(lens_text)
+        if hasattr(self,'shot_analysis'): self.shot_analysis.setText(self._shot_analysis_text(est['eq35'],est['hfov'],est['confidence']))
         details=[]
         for label,val in est['pairs']:
             if val is not None:

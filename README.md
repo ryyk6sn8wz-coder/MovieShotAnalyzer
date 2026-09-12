@@ -60,3 +60,10 @@ Artifact `MovieShotAnalyzer-Windows` の中には `MovieShotAnalyzer.exe` が直
 - Low-confidence results show a warning and a sensitivity range rather than presenting a narrow high-confidence range.
 - Y/VP3 remains independent drawing perspective and never changes lens/FOV.
 - v1.5 four-point editable calibration and draggable VP behavior are preserved.
+
+## v1.8 Integrated Shot Analysis
+- 「ショット分析」を独立タブに戻さず、「パース・レンズ > カメラ / レンズ」に統合。
+- X/Zのレンズ/FOVから、作画向けの「レンズ感・パース感・圧縮感」を同時表示。
+- 焦点距離が推定不可でも、v1.7のレンズ感フォールバックをショット分析へ引き継ぐ。
+- CU/MS/LS等のショットサイズは焦点距離だけでは決められないため、現段階では誤判定せず別判定と明示。
+- Y/VP3は従来どおり作画用として独立し、レンズ値には影響しない。
