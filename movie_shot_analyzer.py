@@ -1191,7 +1191,7 @@ class MovieShotAnalyzer(QMainWindow):
         # thumbnails currently visible in the horizontal viewport are decoded.
         self._thumb_icon_cache={}
         self._thumb_visible_timer=None
-        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('v2.0.4 — lightweight clickable thumbnail navigation')
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('v2.0.5 — fixed XYZ labels + reliable thumbnail jump')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
@@ -1280,7 +1280,14 @@ class MovieShotAnalyzer(QMainWindow):
         self.section(lay,'グリッド / 放射線')
         self.vp_ray_checks={}; self.vp_ray_count_labels={}; self.vp_ray_color_buttons={}
         for key,label in [('vp1','X'),('vp2','Z'),('vp3','Y')]:
-            row=QHBoxLayout(); row.setSpacing(4); chk=QCheckBox(label); chk.setChecked(self.vp_ray_visible[key]); chk.setFixedWidth(30); chk.toggled.connect(lambda v,k=key:self.set_vp_ray_visible(k,v)); row.addWidget(chk); self.vp_ray_checks[key]=chk; minus=QPushButton('−'); minus.setFixedWidth(31); minus.clicked.connect(lambda checked=False,k=key:self.change_vp_ray_count(k,-1)); row.addWidget(minus); val=QLabel(str(self.vp_ray_counts[key])); val.setAlignment(Qt.AlignmentFlag.AlignCenter); val.setFixedWidth(28); row.addWidget(val); self.vp_ray_count_labels[key]=val; plus=QPushButton('+'); plus.setFixedWidth(31); plus.clicked.connect(lambda checked=False,k=key:self.change_vp_ray_count(k,1)); row.addWidget(plus); col=QPushButton('色'); col.setFixedWidth(38); col.clicked.connect(lambda checked=False,k=key:self.choose_vp_ray_color(k)); row.addWidget(col); self.vp_ray_color_buttons[key]=col; row.addStretch(1); lay.addLayout(row)
+            row=QHBoxLayout(); row.setSpacing(4)
+            chk=QCheckBox(); chk.setChecked(self.vp_ray_visible[key]); chk.setFixedWidth(22); chk.toggled.connect(lambda v,k=key:self.set_vp_ray_visible(k,v)); row.addWidget(chk); self.vp_ray_checks[key]=chk
+            axis_lab=QLabel(label); axis_lab.setAlignment(Qt.AlignmentFlag.AlignCenter); axis_lab.setFixedWidth(18); axis_lab.setStyleSheet('padding:0; min-height:0;'); row.addWidget(axis_lab)
+            minus=QPushButton('−'); minus.setFixedWidth(31); minus.clicked.connect(lambda checked=False,k=key:self.change_vp_ray_count(k,-1)); row.addWidget(minus)
+            val=QLabel(str(self.vp_ray_counts[key])); val.setAlignment(Qt.AlignmentFlag.AlignCenter); val.setFixedWidth(28); val.setStyleSheet('padding:0; min-height:0;'); row.addWidget(val); self.vp_ray_count_labels[key]=val
+            plus=QPushButton('+'); plus.setFixedWidth(31); plus.clicked.connect(lambda checked=False,k=key:self.change_vp_ray_count(k,1)); row.addWidget(plus)
+            col=QPushButton('色'); col.setFixedWidth(38); col.clicked.connect(lambda checked=False,k=key:self.choose_vp_ray_color(k)); row.addWidget(col); self.vp_ray_color_buttons[key]=col
+            row.addStretch(1); lay.addLayout(row)
         self._update_vp_color_buttons()
         row=QHBoxLayout(); row.addWidget(QLabel('線幅')); self.perspective_line_width=StepControl(0.5,5.0,0.5,0.5); self.perspective_line_width.value.valueChanged.connect(self.refresh); row.addWidget(self.perspective_line_width); lay.addLayout(row)
         row=QHBoxLayout(); row.addWidget(QLabel('透明度')); self.perspective_alpha=QSlider(Qt.Orientation.Horizontal); self.perspective_alpha.setRange(0,100); self.perspective_alpha.setValue(70); self.perspective_alpha.valueChanged.connect(self.refresh); row.addWidget(self.perspective_alpha,1); self.perspective_alpha_label=QLabel('70%'); self.perspective_alpha_label.setFixedWidth(38); self.perspective_alpha.valueChanged.connect(lambda v:self.perspective_alpha_label.setText(f'{v}%')); row.addWidget(self.perspective_alpha_label); lay.addLayout(row)
@@ -1366,7 +1373,9 @@ class MovieShotAnalyzer(QMainWindow):
             b.setCheckable(True); b.setChecked(i==self.current_index)
             b.setFixedSize(104,64); b.setToolTip(f'{i+1}: {p.name}')
             b.setProperty('shotIndex', i)
-            b.clicked.connect(self._on_thumbnail_clicked)
+            # Capture the index directly.  Using sender()/dynamic properties proved unreliable
+            # in some Windows/PySide6 packaged builds when buttons were updated lazily.
+            b.clicked.connect(lambda checked=False, idx=i: self._jump_to_image(idx))
             self.thumb_layout.addWidget(b)
             self.thumb_buttons.append(b)
         self.thumb_layout.addStretch(1)
@@ -1437,7 +1446,9 @@ class MovieShotAnalyzer(QMainWindow):
             QTimer.singleShot(0, lambda w=current_button: self.thumb_scroll.ensureWidgetVisible(w, 24, 0))
             QTimer.singleShot(15, self._schedule_visible_thumbnails)
 
-    def _on_thumbnail_clicked(self, checked=False):
+    def _on_thumbnail_clicked(self, checked=False, index=None):
+        if index is not None:
+            self._jump_to_image(int(index)); return
         b=self.sender()
         if b is None: return
         idx=b.property('shotIndex')
