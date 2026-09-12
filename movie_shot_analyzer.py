@@ -715,21 +715,17 @@ class ImageCanvas(QWidget):
                     outline=QPen(QColor(color)); outline.setWidthF(2.0); p.setPen(outline); p.setBrush(QColor('#ffffff'))
                     for ptxy in line:
                         hp=self._image_norm_to_point(*ptxy); p.drawEllipse(QRectF(hp.x()-5,hp.y()-5,10,10))
-        # Z/depth refinement observations. Kept visually lighter than the two base strokes.
-        zextras=getattr(self.owner,'perspective_extra_lines',{}).get('vp2',[])
-        if zextras:
-            basew=self.owner.perspective_line_width.value.value()
-            c=QColor(self.owner.vp_ray_colors.get('vp2','#ff4fa3'))
-            c.setAlpha(round(255*self.owner.perspective_alpha.value()/100*0.45))
-            pen=QPen(c); pen.setWidthF(max(0.5,basew)); pen.setStyle(Qt.PenStyle.DashLine); p.setPen(pen)
-            for seg in zextras:
-                a=self._image_norm_to_point(*seg[0]); b=self._image_norm_to_point(*seg[1])
-                p.drawLine(a,b)
-        if self.drag_item and self.drag_item[0]=='z_refine_draw':
-            seg=getattr(self,'_z_refine_preview',None)
+        # Optional refinement observations for X/Z/Y. Kept lighter than base strokes.
+        for rkey in ('vp1','vp2','vp3'):
+            extras=getattr(self.owner,'perspective_extra_lines',{}).get(rkey,[])
+            if extras:
+                basew=self.owner.perspective_line_width.value.value(); c=QColor(self.owner.vp_ray_colors.get(rkey,'#ffffff'))
+                c.setAlpha(round(255*self.owner.perspective_alpha.value()/100*0.45)); pen=QPen(c); pen.setWidthF(max(0.5,basew)); pen.setStyle(Qt.PenStyle.DashLine); p.setPen(pen)
+                for seg in extras: p.drawLine(self._image_norm_to_point(*seg[0]),self._image_norm_to_point(*seg[1]))
+        if self.drag_item and self.drag_item[0]=='axis_refine_draw':
+            rkey=self.drag_item[1]; seg=getattr(self,'_axis_refine_preview',None)
             if seg:
-                c=QColor(self.owner.vp_ray_colors.get('vp2','#ff4fa3')); c.setAlpha(220)
-                pen=QPen(c); pen.setWidthF(max(1.0,self.owner.perspective_line_width.value.value()*2.0)); p.setPen(pen)
+                c=QColor(self.owner.vp_ray_colors.get(rkey,'#ffffff')); c.setAlpha(220); pen=QPen(c); pen.setWidthF(max(1.0,self.owner.perspective_line_width.value.value()*2.0)); p.setPen(pen)
                 p.drawLine(self._image_norm_to_point(*seg[0]),self._image_norm_to_point(*seg[1]))
 
         # solved VP markers only; unsolved defaults stay invisible.
@@ -886,15 +882,12 @@ class ImageCanvas(QWidget):
         pencil_on=(hasattr(self.owner,'perspective_pencil') and self.owner.perspective_pencil.isChecked())
         persp_tab=(hasattr(self.owner,'right_tabs') and self.owner.right_tabs.currentIndex()==0)
 
-        # One-shot Z refinement stroke. It is stored separately from the two base lines.
-        if persp_tab and pencil_on and in_image and getattr(self.owner,'z_refine_mode',False):
-            self.owner.push_perspective_undo()
-            nx,ny=self._point_to_image_norm(pos)
-            self.drag_item=('z_refine_draw',)
-            self._persp_draw_start=(nx,ny)
-            self._z_refine_preview=[(nx,ny),(nx,ny)]
-            self.setCursor(self._get_pencil_cursor())
-            self.update(); return
+        # One-shot X/Z/Y refinement stroke, stored separately from the two base lines.
+        refine_key=getattr(self.owner,'axis_refine_mode',None)
+        if persp_tab and pencil_on and in_image and refine_key:
+            self.owner.push_perspective_undo(); nx,ny=self._point_to_image_norm(pos)
+            self.drag_item=('axis_refine_draw',refine_key); self._persp_draw_start=(nx,ny); self._axis_refine_preview=[(nx,ny),(nx,ny)]
+            self.setCursor(self._get_pencil_cursor()); self.update(); return
 
         if persp_tab and pencil_on and in_image and not phit:
             self.owner.push_perspective_undo()
@@ -947,11 +940,9 @@ class ImageCanvas(QWidget):
                 self.owner.view_pan=(self._pan_origin[0]+dx,self._pan_origin[1]+dy)
                 self.update()
             return
-        if typ=='z_refine_draw':
-            nx,ny=self._point_to_image_norm(pos)
-            nx=max(-3.0,min(4.0,nx)); ny=max(-2.0,min(3.0,ny))
-            self._z_refine_preview=[tuple(self._persp_draw_start),(nx,ny)]
-            self.update(); return
+        if typ=='axis_refine_draw':
+            nx,ny=self._point_to_image_norm(pos); nx=max(-3.0,min(4.0,nx)); ny=max(-2.0,min(3.0,ny))
+            self._axis_refine_preview=[tuple(self._persp_draw_start),(nx,ny)]; self.update(); return
         if typ=='perspective_draw':
             name,li=self.drag_item[1],self.drag_item[2]
             nx,ny=self._point_to_image_norm(pos)
@@ -959,7 +950,7 @@ class ImageCanvas(QWidget):
             lines=[[tuple(pt) for pt in line] for line in self.owner.perspective_lines[name]]
             lines[li]=[tuple(self._persp_draw_start),(nx,ny)]
             self.owner.perspective_lines[name]=lines
-            if li==1: self.owner.solve_perspective_axis(name)
+            # Keep pencil dragging lightweight. Solve VP/grid once on mouse release.
         elif typ=='perspective_vp':
             name=self.drag_item[1]; nx,ny=self._point_to_image_norm(pos)
             nx=max(-3.0,min(4.0,nx)); ny=max(-2.0,min(3.0,ny))
@@ -1071,22 +1062,15 @@ class ImageCanvas(QWidget):
             e.accept(); return
         if self.drag_item and self.drag_item[0].startswith('frame_'): self.owner.save_frame()
 
-        if self.drag_item and self.drag_item[0]=='z_refine_draw':
-            line=getattr(self,'_z_refine_preview',None)
-            self.owner.z_refine_mode=False
+        if self.drag_item and self.drag_item[0]=='axis_refine_draw':
+            key=self.drag_item[1]; line=getattr(self,'_axis_refine_preview',None); self.owner.axis_refine_mode=None
             if line is not None:
                 dx=line[1][0]-line[0][0]; dy=line[1][1]-line[0][1]
                 if math.hypot(dx,dy)>=0.0005:
-                    arr=self.owner.perspective_extra_lines.setdefault('vp2',[])
-                    if len(arr)<6:
-                        arr.append([tuple(line[0]),tuple(line[1])])
-                    self.owner.recompute_after_z_refinement()
-                    self.owner.save_perspective()
-            self._z_refine_preview=None
-            self.drag_item=None
-            self.owner.update_z_refine_label()
-            self.owner.refresh()
-            return
+                    arr=self.owner.perspective_extra_lines.setdefault(key,[])
+                    if len(arr)<6: arr.append([tuple(line[0]),tuple(line[1])])
+                    self.owner.recompute_after_axis_refinement(key); self.owner.save_perspective()
+            self._axis_refine_preview=None; self.drag_item=None; self.owner.update_axis_refine_labels(); self.owner.refresh(); return
 
         if self.drag_item and self.drag_item[0]=='perspective_draw':
             name,li=self.drag_item[1],self.drag_item[2]
@@ -1143,7 +1127,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — v1.5 Editable VP Guides'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — v1.9 Multi-Axis Refinement'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         # Pure Manual Perspective: no automatic-analysis data and no learning data
@@ -1158,8 +1142,8 @@ class MovieShotAnalyzer(QMainWindow):
         self._persp_line1_locked={'vp1':None,'vp2':None,'vp3':None}
         # Optional extra observations for Z/depth. They refine VP2 without replacing
         # the original two calibration strokes.
-        self.perspective_extra_lines={'vp2':[]}
-        self.z_refine_mode=False
+        self.perspective_extra_lines={'vp1':[],'vp2':[],'vp3':[]}
+        self.axis_refine_mode=None
         self.vp_at_infinity={'vp1':False,'vp2':False,'vp3':False}; self.vp3_at_infinity=False
         self.camera_solution=None
         self.camera_inf_dir={'vp1':None,'vp2':None,'vp3':None}
@@ -1199,7 +1183,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('Perspective Tool + Lens Solver v1.4'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('Perspective Tool + Lens Solver v1.9'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1264,7 +1248,13 @@ class MovieShotAnalyzer(QMainWindow):
         self.persp_step_label=QLabel('X 1本目：画像上をドラッグ'); self.persp_step_label.setObjectName('fileLabel'); self.persp_step_label.setWordWrap(True); lay.addWidget(self.persp_step_label)
         self.persp_status_label=QLabel('X —   Z —   Y —'); self.persp_status_label.setObjectName('note'); self.persp_status_label.setWordWrap(True); lay.addWidget(self.persp_status_label)
         row=QHBoxLayout(); row.setSpacing(5); resetaxis=QPushButton('選択軸リセット'); resetaxis.clicked.connect(self.reset_active_perspective_axis); resetall=QPushButton('全リセット'); resetall.clicked.connect(self.reset_perspective); row.addWidget(resetaxis,1); row.addWidget(resetall,1); lay.addLayout(row)
-        zrow=QHBoxLayout(); zrow.setSpacing(5); self.z_refine_label=QLabel('Z補助 0本'); self.z_refine_label.setObjectName('note'); zrow.addWidget(self.z_refine_label,1); self.z_refine_btn=QPushButton('＋追加'); self.z_refine_btn.setToolTip('Z軸の追加エッジを1本描きます。最大6本。'); self.z_refine_btn.clicked.connect(self.arm_z_refinement_line); zrow.addWidget(self.z_refine_btn); self.z_clear_btn=QPushButton('クリア'); self.z_clear_btn.clicked.connect(self.clear_z_refinement_lines); zrow.addWidget(self.z_clear_btn); lay.addLayout(zrow)
+        self.axis_refine_labels={}; self.axis_refine_buttons={}; self.axis_refine_clear_buttons={}
+        for key,label,desc in [('vp1','X','水平'),('vp2','Z','奥行'),('vp3','Y','垂直')]:
+            rr=QHBoxLayout(); rr.setSpacing(5)
+            lab=QLabel(f'{label}補助 0本'); lab.setObjectName('note'); rr.addWidget(lab,1); self.axis_refine_labels[key]=lab
+            add=QPushButton('＋追加'); add.setToolTip(f'{label}軸（{desc}）の追加エッジを1本描きます。最大6本。'); add.clicked.connect(lambda checked=False,k=key:self.arm_axis_refinement_line(k)); rr.addWidget(add); self.axis_refine_buttons[key]=add
+            clear=QPushButton('クリア'); clear.clicked.connect(lambda checked=False,k=key:self.clear_axis_refinement_lines(k)); rr.addWidget(clear); self.axis_refine_clear_buttons[key]=clear
+            lay.addLayout(rr)
         self.section(lay,'グリッド / 放射線')
         self.vp_ray_checks={}; self.vp_ray_count_labels={}; self.vp_ray_color_buttons={}
         for key,label in [('vp1','X'),('vp2','Z'),('vp3','Y')]:
@@ -1345,7 +1335,7 @@ class MovieShotAnalyzer(QMainWindow):
             'step':int(self.perspective_step),
             'infinity':dict(getattr(self,'vp_at_infinity',{'vp1':False,'vp2':False,'vp3':False})),
             'vp3_at_infinity':bool(getattr(self,'vp3_at_infinity',False)),
-            'extra_lines':copy.deepcopy(getattr(self,'perspective_extra_lines',{'vp2':[]})),
+            'extra_lines':copy.deepcopy(getattr(self,'perspective_extra_lines',{'vp1':[],'vp2':[],'vp3':[]})),
             'line1_locked':copy.deepcopy(getattr(self,'_persp_line1_locked',{'vp1':None,'vp2':None,'vp3':None})),
         }
 
@@ -1359,8 +1349,8 @@ class MovieShotAnalyzer(QMainWindow):
         self._restoring_perspective_history=True
         try:
             self.vp1=tuple(st['vp1']); self.vp2=tuple(st['vp2']); self.vp3=tuple(st['vp3'])
-            self.eye_level_y=float(st['eye']); self.perspective_lines=copy.deepcopy(st['lines']); self._persp_axis_complete=dict(st['complete']); self._persp_anchor_touched=copy.deepcopy(st['touched']); self.active_perspective_axis=st.get('active','vp1'); self.perspective_step=int(st.get('step',0)); self.vp_at_infinity=dict(st.get('infinity',{'vp1':False,'vp2':False,'vp3':False})); self.vp3_at_infinity=bool(st.get('vp3_at_infinity',False)); self.perspective_extra_lines=copy.deepcopy(st.get('extra_lines',{'vp2':[]})); self._persp_line1_locked=copy.deepcopy(st.get('line1_locked',{'vp1':None,'vp2':None,'vp3':None}))
-            self.z_refine_mode=False; self.update_z_refine_label(); self.camera_solution=None; self.camera_inf_dir={'vp1':None,'vp2':None,'vp3':None}; self.camera_solve_error=None
+            self.eye_level_y=float(st['eye']); self.perspective_lines=copy.deepcopy(st['lines']); self._persp_axis_complete=dict(st['complete']); self._persp_anchor_touched=copy.deepcopy(st['touched']); self.active_perspective_axis=st.get('active','vp1'); self.perspective_step=int(st.get('step',0)); self.vp_at_infinity=dict(st.get('infinity',{'vp1':False,'vp2':False,'vp3':False})); self.vp3_at_infinity=bool(st.get('vp3_at_infinity',False)); self.perspective_extra_lines=copy.deepcopy(st.get('extra_lines',{'vp1':[],'vp2':[],'vp3':[]})); [self.perspective_extra_lines.setdefault(k,[]) for k in ('vp1','vp2','vp3')]; self._persp_line1_locked=copy.deepcopy(st.get('line1_locked',{'vp1':None,'vp2':None,'vp3':None}))
+            self.axis_refine_mode=None; self.update_axis_refine_labels(); self.camera_solution=None; self.camera_inf_dir={'vp1':None,'vp2':None,'vp3':None}; self.camera_solve_error=None
             self.recompute_lens_from_current_vps(); self.update_perspective_labels(); self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
         finally:
             self._restoring_perspective_history=False
@@ -1379,39 +1369,53 @@ class MovieShotAnalyzer(QMainWindow):
         self._restore_perspective_history_state(self._perspective_redo.pop())
         self.statusBar().showMessage('パースを1操作やり直しました',1200)
 
+    def update_axis_refine_labels(self):
+        if not hasattr(self,'axis_refine_labels'): return
+        names={'vp1':'X','vp2':'Z','vp3':'Y'}
+        for key,lab in self.axis_refine_labels.items():
+            n=len(getattr(self,'perspective_extra_lines',{}).get(key,[]))
+            waiting = getattr(self,'axis_refine_mode',None)==key
+            lab.setText(f'{names[key]}補助 {n}本' + (' / 描画待ち' if waiting else ''))
+
     def update_z_refine_label(self):
-        if hasattr(self,'z_refine_label'):
-            n=len(getattr(self,'perspective_extra_lines',{}).get('vp2',[]))
-            self.z_refine_label.setText(f'Z補助 {n}本' + (' / 描画待ち' if getattr(self,'z_refine_mode',False) else ''))
+        # Backward-compatible alias used by older call sites.
+        self.update_axis_refine_labels()
 
-    def arm_z_refinement_line(self):
-        arr=self.perspective_extra_lines.setdefault('vp2',[])
+    def arm_axis_refinement_line(self,key):
+        arr=self.perspective_extra_lines.setdefault(key,[])
+        names={'vp1':'X','vp2':'Z','vp3':'Y'}
         if len(arr)>=6:
-            self.statusBar().showMessage('Z補助線は最大6本です',2200); return
-        if not (self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2')):
-            self.statusBar().showMessage('先にX軸とZ軸の基本2本を確定してください',2500); return
-        self.active_perspective_axis='vp2'
-        self.z_refine_mode=True
-        self.update_perspective_panel_state()
-        self.update_z_refine_label()
-        self.statusBar().showMessage('Z補助線：奥行き方向のエッジを1本ドラッグしてください',3000)
+            self.statusBar().showMessage(f'{names[key]}補助線は最大6本です',2200); return
+        if not self._persp_axis_complete.get(key,False):
+            self.statusBar().showMessage(f'先に{names[key]}軸の基本2本を確定してください',2500); return
+        self.active_perspective_axis=key
+        self.axis_refine_mode=key
+        self.update_perspective_panel_state(); self.update_axis_refine_labels()
+        self.statusBar().showMessage(f'{names[key]}補助線：同じ方向のエッジを1本ドラッグしてください',3000)
 
-    def clear_z_refinement_lines(self):
-        if not self.perspective_extra_lines.get('vp2'):
-            return
-        self.push_perspective_undo()
-        self.perspective_extra_lines['vp2']=[]
-        self.z_refine_mode=False
-        self.recompute_after_z_refinement()
-        self.update_z_refine_label()
-        self.save_perspective(); self.refresh()
+    def arm_z_refinement_line(self): self.arm_axis_refinement_line('vp2')
 
-    def recompute_after_z_refinement(self):
-        if self._persp_axis_complete.get('vp2'):
-            q=self._axis_observation_h('vp2')
+    def clear_axis_refinement_lines(self,key):
+        if not self.perspective_extra_lines.get(key): return
+        self.push_perspective_undo(); self.perspective_extra_lines[key]=[]; self.axis_refine_mode=None
+        self.recompute_after_axis_refinement(key); self.update_axis_refine_labels(); self.save_perspective(); self.refresh()
+
+    def clear_z_refinement_lines(self): self.clear_axis_refinement_lines('vp2')
+
+    def recompute_after_axis_refinement(self,key):
+        if self._persp_axis_complete.get(key):
+            q=self._axis_observation_h(key)
             if q is not None and abs(float(q[2]))>=1e-9 and self.original is not None:
-                w=float(self.original.width); h=float(self.original.height); self.vp2=(float(q[0]/q[2])/w,float(q[1]/q[2])/h); self.vp_at_infinity['vp2']=False
+                w=float(self.original.width); h=float(self.original.height)
+                xy=(float(q[0]/q[2])/w,float(q[1]/q[2])/h)
+                if key=='vp1': self.vp1=xy
+                elif key=='vp2': self.vp2=xy
+                else: self.vp3=xy; self.vp3_at_infinity=False
+                self.vp_at_infinity[key]=False
+        # Lens remains strictly X+Z. Y extras only stabilize the drawing grid.
         self.recompute_lens_from_current_vps(); self.update_perspective_labels(); self.update_perspective_panel_state()
+
+    def recompute_after_z_refinement(self): self.recompute_after_axis_refinement('vp2')
 
     def set_perspective_axis(self,name):
         self.active_perspective_axis=name
@@ -1484,7 +1488,7 @@ class MovieShotAnalyzer(QMainWindow):
     def reset_active_perspective_axis(self):
         defaults=self.default_perspective_lines(); name=self.active_perspective_axis
         import copy; self.perspective_lines[name]=copy.deepcopy(defaults[name]); self._persp_axis_complete[name]=False; self.vp_at_infinity[name]=False; self.vp3_at_infinity=self.vp_at_infinity['vp3']; self._persp_anchor_touched[(name,0)]=set(); self._persp_anchor_touched.pop((name,1),None); self._persp_line1_locked[name]=None
-        if name=='vp2': self.perspective_extra_lines['vp2']=[]; self.z_refine_mode=False; self.update_z_refine_label()
+        self.perspective_extra_lines[name]=[]; self.axis_refine_mode=None; self.update_axis_refine_labels()
         self.perspective_step=0; self.recompute_lens_from_current_vps(); self.update_perspective_labels(); self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
 
     def _style(self):
@@ -1636,13 +1640,13 @@ class MovieShotAnalyzer(QMainWindow):
             self.vp_at_infinity={k:bool(pd.get('infinity',{}).get(k,False)) for k in ('vp1','vp2','vp3')}
             self.vp3_at_infinity=self.vp_at_infinity['vp3']
             self._persp_anchor_touched={}
-            self.perspective_extra_lines=copy.deepcopy(pd.get('extra_lines',{'vp2':[]}))
+            self.perspective_extra_lines=copy.deepcopy(pd.get('extra_lines',{'vp1':[],'vp2':[],'vp3':[]})); [self.perspective_extra_lines.setdefault(k,[]) for k in ('vp1','vp2','vp3')]
             self._persp_line1_locked=copy.deepcopy(pd.get('line1_locked',{'vp1':None,'vp2':None,'vp3':None}))
             # Backfill safety copies for older saved states.
             for k in ('vp1','vp2','vp3'):
                 if self._persp_line1_locked.get(k) is None and self._persp_axis_complete.get(k,False):
                     self._persp_line1_locked[k]=copy.deepcopy(self.perspective_lines[k][0])
-            self.z_refine_mode=False
+            self.axis_refine_mode=None
             self.active_perspective_axis='vp1'; self.perspective_step=1 if self._persp_axis_complete.get('vp1',False) else 0
             self.update_z_refine_label()
             self.recompute_lens_from_current_vps()
@@ -1887,14 +1891,13 @@ class MovieShotAnalyzer(QMainWindow):
     def _axis_observation_h(self,name):
         """Return manual-axis VP as homogeneous pixel point.
 
-        X/Y use the two base strokes. Z can additionally use up to six refinement
-        strokes and is solved robustly so small endpoint errors do not swing VP2 as much.
+        Every axis can additionally use up to six refinement strokes. X/Z extras
+        stabilize lens estimation; Y extras stabilize only the drawing grid.
         """
         if self.original is None:
             return None
         lines=list(self.perspective_lines.get(name,[]))
-        if name=='vp2':
-            lines += list(getattr(self,'perspective_extra_lines',{}).get('vp2',[]))
+        lines += list(getattr(self,'perspective_extra_lines',{}).get(name,[]))
         return self._robust_vp_from_segments(lines)
 
     def _camera_dir_from_h(self,q,cx,cy,f):
@@ -1927,8 +1930,7 @@ class MovieShotAnalyzer(QMainWindow):
             if q is None:
                 continue
             lines=list(self.perspective_lines.get(key,[]))
-            if key=='vp2':
-                lines += list(getattr(self,'perspective_extra_lines',{}).get('vp2',[]))
+            lines += list(getattr(self,'perspective_extra_lines',{}).get(key,[]))
             for seg in lines:
                 x1,y1=seg[0][0]*w,seg[0][1]*h
                 x2,y2=seg[1][0]*w,seg[1][1]*h
@@ -2051,7 +2053,7 @@ class MovieShotAnalyzer(QMainWindow):
                 'infinity':dict(getattr(self,'vp_at_infinity',{'vp1':False,'vp2':False,'vp3':False})),
                 'vp3_at_infinity':bool(getattr(self,'vp3_at_infinity',False)),
                 'camera_solution':getattr(self,'camera_solution',None),
-                'extra_lines':copy.deepcopy(getattr(self,'perspective_extra_lines',{'vp2':[]})),
+                'extra_lines':copy.deepcopy(getattr(self,'perspective_extra_lines',{'vp1':[],'vp2':[],'vp3':[]})),
                 'line1_locked':copy.deepcopy(getattr(self,'_persp_line1_locked',{'vp1':None,'vp2':None,'vp3':None})),
             }
 
@@ -2073,7 +2075,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.show_perspective_grid_default=True
         self.perspective_lines=self.default_perspective_lines()
         self._persp_line1_locked={'vp1':None,'vp2':None,'vp3':None}
-        self.perspective_extra_lines={'vp2':[]}; self.z_refine_mode=False
+        self.perspective_extra_lines={'vp1':[],'vp2':[],'vp3':[]}; self.axis_refine_mode=None
         self.update_z_refine_label()
         self.update_perspective_panel_state()
         self.update_perspective_labels()
