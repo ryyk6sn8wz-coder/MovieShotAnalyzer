@@ -890,12 +890,21 @@ class ImageCanvas(QWidget):
             self.setCursor(self._get_pencil_cursor()); self.update(); return
 
         if persp_tab and pencil_on and in_image and not phit:
+            name=self.owner.active_perspective_axis
+            # Once an axis is complete, a fresh pencil stroke is always an auxiliary
+            # observation.  This prevents an accidental third stroke from resetting
+            # the two authoritative base lines and removes the need to pre-select a count.
+            if self.owner._persp_axis_complete.get(name,False):
+                arr=self.owner.perspective_extra_lines.setdefault(name,[])
+                if len(arr)>=6:
+                    self.owner.statusBar().showMessage('補助線は各軸最大6本です',1800); return
+                self.owner.push_perspective_undo(); nx,ny=self._point_to_image_norm(pos)
+                self.drag_item=('axis_refine_draw',name); self._persp_draw_start=(nx,ny); self._axis_refine_preview=[(nx,ny),(nx,ny)]
+                self.setCursor(self._get_pencil_cursor()); self.update(); return
             self.owner.push_perspective_undo()
-            name=self.owner.active_perspective_axis; li=self.owner.perspective_step
+            li=self.owner.perspective_step
             nx,ny=self._point_to_image_norm(pos)
             lines=[[tuple(pt) for pt in line] for line in self.owner.perspective_lines[name]]
-            # If line 2 is starting, restore the independently locked line 1 first.
-            # This makes line 1 immune to accidental state resets while the second stroke starts.
             if li==1:
                 locked=getattr(self.owner,'_persp_line1_locked',{}).get(name)
                 if locked is not None:
@@ -1127,7 +1136,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — v1.9 Multi-Axis Refinement'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — v2.0 Compact Refinement'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         # Pure Manual Perspective: no automatic-analysis data and no learning data
@@ -1173,7 +1182,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.batch_export_cancelled=False
         self.batch_export_executor=ThreadPoolExecutor(max_workers=max(2,min(8,(os.cpu_count() or 4))))
         self.auto_frame_on_load=True
-        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('v1.4 — VanishPoint型パース操作 + X/Zレンズ解析')
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('v2.0 — Compact UI + Multi-Axis Lens Refinement')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
@@ -1181,13 +1190,13 @@ class MovieShotAnalyzer(QMainWindow):
         # Capture Left/Right/F before child widgets consume them. Numeric/text controls keep their own arrow behavior.
         app=QApplication.instance()
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
-        cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
+        cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(8,8,8,8); c.setSpacing(4)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('Perspective Tool + Lens Solver v1.9'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('Perspective Tool + Lens Solver v2.0'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
-        keyhint=QLabel('← / →：画像送り　・　F：画像優先　・　H / Space：手のひら　・　Ctrl/Cmd+Z：パースUndo'); keyhint.setObjectName('note'); keyhint.setWordWrap(True); c.addWidget(keyhint)
+        keyhint=QLabel('←→ 画像　F 画像優先　Space/H パン　Ctrl/Cmd+Z Undo'); keyhint.setObjectName('note'); keyhint.setWordWrap(True); c.addWidget(keyhint)
 
         self.section(c,'実映像フレーム')
         self.show_frame=QCheckBox('フレーム枠を表示'); self.show_frame.setChecked(True); self.manual_frame=QCheckBox('自由変形ハンドルを使う'); self.manual_frame.setChecked(True); self.show_frame.toggled.connect(self.refresh); c.addWidget(self.show_frame); c.addWidget(self.manual_frame)
@@ -1212,7 +1221,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.export_progress_label=QLabel('書き出し: 待機中'); self.export_progress_label.setObjectName('note'); self.export_progress_label.setWordWrap(True); c.addWidget(self.export_progress_label)
         export_note=QLabel('表示中の構図ガイド・パース・緑フレームを画像に重ねてPNG保存します。EYE LEVEL/VP HORIZONはVP1＋VP2確定時のみ出力。編集用ハンドルは出力しません。'); export_note.setObjectName('note'); export_note.setWordWrap(True); c.addWidget(export_note)
         c.addStretch(1)
-        scroll=QScrollArea(); scroll.setObjectName('controlScroll'); scroll.setWidgetResizable(True); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); scroll.setWidget(cw); scroll.setMinimumWidth(235); scroll.setMaximumWidth(275); self.left_panel=scroll; outer.addWidget(scroll,0)
+        scroll=QScrollArea(); scroll.setObjectName('controlScroll'); scroll.setWidgetResizable(True); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); scroll.setWidget(cw); scroll.setMinimumWidth(235); scroll.setMaximumWidth(275); self.left_panel=scroll; outer.addWidget(scroll,0)
         self.left_toggle=QPushButton('‹'); self.left_toggle.setObjectName('panelToggle'); self.left_toggle.setFixedWidth(22); self.left_toggle.setToolTip('左パネルを折りたたむ'); self.left_toggle.clicked.connect(self.toggle_left_panel); outer.addWidget(self.left_toggle,0)
         self.canvas=ImageCanvas(self); outer.addWidget(self.canvas,1)
         self.right_toggle=QPushButton('›'); self.right_toggle.setObjectName('panelToggle'); self.right_toggle.setFixedWidth(22); self.right_toggle.setToolTip('右パネルを折りたたむ'); self.right_toggle.clicked.connect(self.toggle_right_panel); outer.addWidget(self.right_toggle,0)
@@ -1233,9 +1242,8 @@ class MovieShotAnalyzer(QMainWindow):
 
     def _build_perspective_tab(self):
         tab=QWidget(); outer=QVBoxLayout(tab); outer.setContentsMargins(0,0,0,0)
-        sc=QScrollArea(); sc.setWidgetResizable(True); sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); sc.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        body=QWidget(); body.setMinimumWidth(0); body.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred)
-        lay=QVBoxLayout(body); lay.setContentsMargins(9,9,9,9); lay.setSpacing(7)
+        body=QWidget(); body.setMinimumWidth(0); body.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Expanding)
+        lay=QVBoxLayout(body); lay.setContentsMargins(7,6,7,6); lay.setSpacing(4)
         self.show_perspective=QCheckBox(); self.show_perspective.setChecked(True); self.show_perspective.hide()
         self.show_perspective_handles=QCheckBox(); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.hide()
         self.perspective_pencil=QCheckBox(); self.perspective_pencil.setChecked(True); self.perspective_pencil.hide()
@@ -1249,12 +1257,14 @@ class MovieShotAnalyzer(QMainWindow):
         self.persp_status_label=QLabel('X —   Z —   Y —'); self.persp_status_label.setObjectName('note'); self.persp_status_label.setWordWrap(True); lay.addWidget(self.persp_status_label)
         row=QHBoxLayout(); row.setSpacing(5); resetaxis=QPushButton('選択軸リセット'); resetaxis.clicked.connect(self.reset_active_perspective_axis); resetall=QPushButton('全リセット'); resetall.clicked.connect(self.reset_perspective); row.addWidget(resetaxis,1); row.addWidget(resetall,1); lay.addLayout(row)
         self.axis_refine_labels={}; self.axis_refine_buttons={}; self.axis_refine_clear_buttons={}
+        refine_row=QHBoxLayout(); refine_row.setSpacing(4)
         for key,label,desc in [('vp1','X','水平'),('vp2','Z','奥行'),('vp3','Y','垂直')]:
-            rr=QHBoxLayout(); rr.setSpacing(5)
-            lab=QLabel(f'{label}補助 0本'); lab.setObjectName('note'); rr.addWidget(lab,1); self.axis_refine_labels[key]=lab
-            add=QPushButton('＋追加'); add.setToolTip(f'{label}軸（{desc}）の追加エッジを1本描きます。最大6本。'); add.clicked.connect(lambda checked=False,k=key:self.arm_axis_refinement_line(k)); rr.addWidget(add); self.axis_refine_buttons[key]=add
-            clear=QPushButton('クリア'); clear.clicked.connect(lambda checked=False,k=key:self.clear_axis_refinement_lines(k)); rr.addWidget(clear); self.axis_refine_clear_buttons[key]=clear
-            lay.addLayout(rr)
+            box=QHBoxLayout(); box.setSpacing(2)
+            lab=QLabel(f'{label}補助0'); lab.setObjectName('note'); lab.setMinimumWidth(52); lab.setToolTip(f'{label}軸（{desc}）の補助線本数。軸確定後は画像上をそのままドラッグして補助線を追加できます。'); box.addWidget(lab); self.axis_refine_labels[key]=lab
+            add=QPushButton('+'); add.setFixedWidth(28); add.setToolTip(f'{label}軸（{desc}）の補助線入力を開始。軸確定後はボタンを押さず直接描いても追加されます。最大6本。'); add.clicked.connect(lambda checked=False,k=key:self.arm_axis_refinement_line(k)); box.addWidget(add); self.axis_refine_buttons[key]=add
+            clear=QPushButton('×'); clear.setFixedWidth(28); clear.setToolTip(f'{label}補助線を全削除'); clear.clicked.connect(lambda checked=False,k=key:self.clear_axis_refinement_lines(k)); box.addWidget(clear); self.axis_refine_clear_buttons[key]=clear
+            refine_row.addLayout(box,1)
+        lay.addLayout(refine_row)
         self.section(lay,'グリッド / 放射線')
         self.vp_ray_checks={}; self.vp_ray_count_labels={}; self.vp_ray_color_buttons={}
         for key,label in [('vp1','X'),('vp2','Z'),('vp3','Y')]:
@@ -1264,14 +1274,13 @@ class MovieShotAnalyzer(QMainWindow):
         row=QHBoxLayout(); row.addWidget(QLabel('透明度')); self.perspective_alpha=QSlider(Qt.Orientation.Horizontal); self.perspective_alpha.setRange(0,100); self.perspective_alpha.setValue(70); self.perspective_alpha.valueChanged.connect(self.refresh); row.addWidget(self.perspective_alpha,1); self.perspective_alpha_label=QLabel('70%'); self.perspective_alpha_label.setFixedWidth(38); self.perspective_alpha.valueChanged.connect(lambda v:self.perspective_alpha_label.setText(f'{v}%')); row.addWidget(self.perspective_alpha_label); lay.addLayout(row)
         self.section(lay,'カメラ / レンズ')
         self.persp_lens=QLabel('X＋Zを確定するとレンズ推定を開始します。'); self.persp_lens.setObjectName('fileLabel'); self.persp_lens.setWordWrap(True); self.persp_lens.setMinimumWidth(0); lay.addWidget(self.persp_lens)
-        self.camera_solve_label=QLabel('主点：画像中央 / Yは作画用として独立'); self.camera_solve_label.setObjectName('note'); self.camera_solve_label.setWordWrap(True); lay.addWidget(self.camera_solve_label)
+        self.camera_solve_label=QLabel('主点：画像中央 / Yは作画用として独立'); self.camera_solve_label.setObjectName('note'); self.camera_solve_label.setWordWrap(True); self.camera_solve_label.hide()
         self.shot_analysis=QLabel('ショット分析：X＋Z確定後に表示します。'); self.shot_analysis.setObjectName('fileLabel'); self.shot_analysis.setWordWrap(True); self.shot_analysis.setMinimumWidth(0); lay.addWidget(self.shot_analysis)
         row=QHBoxLayout(); solve_btn=QPushButton('再計算'); solve_btn.clicked.connect(self.solve_camera_calibration); row.addWidget(solve_btn); self.persp_detail_toggle=QPushButton('詳細 ▼'); self.persp_detail_toggle.setCheckable(True); self.persp_detail_toggle.toggled.connect(self.toggle_perspective_details); row.addWidget(self.persp_detail_toggle); lay.addLayout(row)
         self.persp_detail_widget=QWidget(); detail_lay=QVBoxLayout(self.persp_detail_widget); detail_lay.setContentsMargins(0,0,0,0); detail_lay.setSpacing(4); self.persp_label=QLabel('未解決'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); detail_lay.addWidget(self.persp_label); self.persp_lens_detail=QLabel('レンズはX/Zの現在VPのみを使用。Y/VP3はレンズ値を変更しません。'); self.persp_lens_detail.setObjectName('note'); self.persp_lens_detail.setWordWrap(True); detail_lay.addWidget(self.persp_lens_detail); self.persp_detail_widget.setVisible(False); lay.addWidget(self.persp_detail_widget)
         self.section(lay,'表示')
-        row=QHBoxLayout(); row.addWidget(QLabel('作業領域')); self.workspace_scale=QSlider(Qt.Orientation.Horizontal); self.workspace_scale.setRange(100,400); self.workspace_scale.setValue(100); self.workspace_scale.valueChanged.connect(self.refresh); row.addWidget(self.workspace_scale,1); self.workspace_label=QLabel('100%'); self.workspace_label.setFixedWidth(46); self.workspace_scale.valueChanged.connect(lambda v:self.workspace_label.setText(f'{v}%')); row.addWidget(self.workspace_label); lay.addLayout(row)
-        row=QHBoxLayout(); row.addWidget(QLabel('ズーム')); self.zoom_label=QLabel('100%'); row.addWidget(self.zoom_label); zreset=QPushButton('100%'); zreset.clicked.connect(self.reset_zoom); row.addWidget(zreset); lay.addLayout(row)
-        lay.addStretch(1); sc.setWidget(body); outer.addWidget(sc); self.right_tabs.addTab(tab,'パース・レンズ')
+        row=QHBoxLayout(); row.setSpacing(4); row.addWidget(QLabel('領域')); self.workspace_scale=QSlider(Qt.Orientation.Horizontal); self.workspace_scale.setRange(100,400); self.workspace_scale.setValue(100); self.workspace_scale.valueChanged.connect(self.refresh); row.addWidget(self.workspace_scale,1); self.workspace_label=QLabel('100%'); self.workspace_label.setFixedWidth(40); self.workspace_scale.valueChanged.connect(lambda v:self.workspace_label.setText(f'{v}%')); row.addWidget(self.workspace_label); row.addWidget(QLabel('Zoom')); self.zoom_label=QLabel('100%'); self.zoom_label.setFixedWidth(42); row.addWidget(self.zoom_label); zreset=QPushButton('100%'); zreset.setFixedWidth(48); zreset.clicked.connect(self.reset_zoom); row.addWidget(zreset); lay.addLayout(row)
+        lay.addStretch(1); outer.addWidget(body); self.right_tabs.addTab(tab,'パース・レンズ')
 
     def toggle_perspective_details(self,on):
         if hasattr(self,'persp_detail_widget'): self.persp_detail_widget.setVisible(bool(on))
@@ -1375,7 +1384,7 @@ class MovieShotAnalyzer(QMainWindow):
         for key,lab in self.axis_refine_labels.items():
             n=len(getattr(self,'perspective_extra_lines',{}).get(key,[]))
             waiting = getattr(self,'axis_refine_mode',None)==key
-            lab.setText(f'{names[key]}補助 {n}本' + (' / 描画待ち' if waiting else ''))
+            lab.setText(f'{names[key]}補助{n}' + ('●' if waiting else ''))
 
     def update_z_refine_label(self):
         # Backward-compatible alias used by older call sites.
@@ -1492,7 +1501,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.perspective_step=0; self.recompute_lens_from_current_vps(); self.update_perspective_labels(); self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
 
     def _style(self):
-        self.setStyleSheet('''QMainWindow,QWidget{background:#20242b;color:#e8edf3}#controlsWidget{background:#20242b}#controlScroll{border:1px solid #343a43;background:#20242b}#appTitle{font-size:20px;font-weight:700}#panelTitle{font-size:18px;font-weight:700}#rightPanel{background:#1b1f26;border:1px solid #343a43}QTabWidget::pane{border:1px solid #343a43;background:#1b1f26}QTabBar::tab{background:#272d36;border:1px solid #3e4652;padding:9px 12px;margin-right:2px}QTabBar::tab:selected{background:#2d6cdf;color:white}QPushButton:checked{background:#2d6cdf;border-color:#68a0ff;color:white}#subtitle,#note{color:#aeb7c4}#section{font-size:14px;font-weight:700;color:#d9e2ec;margin-top:8px;border-top:1px solid #3b424d;padding-top:8px}#fileLabel{background:#171a20;border:1px solid #343a43;border-radius:5px;padding:8px}QPushButton{background:#303641;border:1px solid #48505d;border-radius:5px;padding:7px}QPushButton:hover{background:#3a424f}#panelToggle{padding:2px;font-size:17px;font-weight:700;background:#252b34;border-radius:3px}QPushButton:disabled{color:#69717c;background:#272b32}QLabel{min-height:20px;padding-top:2px;padding-bottom:2px}QCheckBox{min-height:22px;padding:3px 1px}QDoubleSpinBox{background:#171a20;border:1px solid #48505d;padding:4px}QSlider::groove:horizontal{height:4px;background:#3b424d}QSlider::handle:horizontal{width:14px;margin:-5px 0;background:#8ab4f8;border-radius:7px}QScrollBar:vertical{background:#20242b;width:12px}QScrollBar::handle:vertical{background:#4a5260;min-height:28px;border-radius:5px}QStatusBar{background:#171a20;color:#aeb7c4}''')
+        self.setStyleSheet('''QMainWindow,QWidget{background:#20242b;color:#e8edf3}#controlsWidget{background:#20242b}#controlScroll{border:1px solid #343a43;background:#20242b}#appTitle{font-size:20px;font-weight:700}#panelTitle{font-size:18px;font-weight:700}#rightPanel{background:#1b1f26;border:1px solid #343a43}QTabWidget::pane{border:1px solid #343a43;background:#1b1f26}QTabBar::tab{background:#272d36;border:1px solid #3e4652;padding:6px 10px;margin-right:2px}QTabBar::tab:selected{background:#2d6cdf;color:white}QPushButton:checked{background:#2d6cdf;border-color:#68a0ff;color:white}#subtitle,#note{color:#aeb7c4}#section{font-size:14px;font-weight:700;color:#d9e2ec;margin-top:8px;border-top:1px solid #3b424d;padding-top:8px}#fileLabel{background:#171a20;border:1px solid #343a43;border-radius:5px;padding:5px}QPushButton{background:#303641;border:1px solid #48505d;border-radius:5px;padding:5px}QPushButton:hover{background:#3a424f}#panelToggle{padding:2px;font-size:17px;font-weight:700;background:#252b34;border-radius:3px}QPushButton:disabled{color:#69717c;background:#272b32}QLabel{min-height:18px;padding-top:1px;padding-bottom:1px}QCheckBox{min-height:20px;padding:1px}QDoubleSpinBox{background:#171a20;border:1px solid #48505d;padding:4px}QSlider::groove:horizontal{height:4px;background:#3b424d}QSlider::handle:horizontal{width:14px;margin:-5px 0;background:#8ab4f8;border-radius:7px}QScrollBar:vertical{background:#20242b;width:12px}QScrollBar::handle:vertical{background:#4a5260;min-height:28px;border-radius:5px}QStatusBar{background:#171a20;color:#aeb7c4}''')
     def toggle_left_panel(self):
         if not hasattr(self,'left_panel'): return
         visible=self.left_panel.isVisible()
@@ -2168,51 +2177,71 @@ class MovieShotAnalyzer(QMainWindow):
         w=float(self.original.width); h=float(self.original.height)
         return (float(q[0]/q[2])/w,float(q[1]/q[2])/h)
 
-    def _lens_sensitivity_range(self, samples=160):
-        """Estimate practical lens uncertainty by perturbing the drawn guide angles.
+    def _axis_observation_angle_spread_deg(self,name):
+        """Maximum acute orientation separation among all observations for one axis."""
+        if self.original is None:return None
+        lines=list(self.perspective_lines.get(name,[])) + list(getattr(self,'perspective_extra_lines',{}).get(name,[]))
+        if len(lines)<2:return None
+        w=float(self.original.width); h=float(self.original.height); dirs=[]
+        for seg in lines:
+            dx=(seg[1][0]-seg[0][0])*w; dy=(seg[1][1]-seg[0][1])*h; n=math.hypot(dx,dy)
+            if n<1e-8:continue
+            dirs.append((dx/n,dy/n))
+        if len(dirs)<2:return None
+        best=0.0
+        for i in range(len(dirs)):
+            for j in range(i+1,len(dirs)):
+                dot=max(-1.0,min(1.0,abs(dirs[i][0]*dirs[j][0]+dirs[i][1]*dirs[j][1])))
+                best=max(best,math.degrees(math.acos(dot)))
+        return best
 
-        Pixel-jittering an already-computed VP badly understates uncertainty when the
-        source lines are nearly parallel.  Instead perturb each of the four X/Z base
-        strokes by a small angular amount and solve the VPs again.
+    def _lens_sensitivity_range(self, samples=180):
+        """Lens uncertainty from all X/Z observations, including auxiliary strokes.
+
+        Each run perturbs every observed edge slightly, then recomputes each VP using
+        robust multi-line fitting.  With 3+ observations this measures repeatability
+        substantially better than perturbing only the original two lines.
         """
         if self.original is None:return None
         if not (self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2')):return None
-        lx=self.perspective_lines.get('vp1',[])[:2]; lz=self.perspective_lines.get('vp2',[])[:2]
+        lx=list(self.perspective_lines.get('vp1',[])[:2]) + list(getattr(self,'perspective_extra_lines',{}).get('vp1',[]))
+        lz=list(self.perspective_lines.get('vp2',[])[:2]) + list(getattr(self,'perspective_extra_lines',{}).get('vp2',[]))
         if len(lx)<2 or len(lz)<2:return None
-        w=float(self.original.width)
-        vals=[]; failed=0; rng=random.Random(137)
-        # 0.20 degree 1-sigma approximates the small visual adjustment an artist makes
-        # when choosing an edge. Near-parallel lines naturally amplify this strongly.
+        w=float(self.original.width); h=float(self.original.height); vals=[]; failed=0; rng=random.Random(137)
         sigma_deg=0.20
-        for _ in range(max(48,int(samples))):
+        def solve(lines):
+            q=self._robust_vp_from_segments(lines)
+            if q is None:return None
+            scale=max(1.0,math.hypot(float(q[0]),float(q[1])))
+            if abs(float(q[2])) < 1e-7*scale:return None
+            return (float(q[0]/q[2])/w,float(q[1]/q[2])/h)
+        for _ in range(max(64,int(samples))):
             px=[self._rotate_segment(seg,rng.gauss(0,sigma_deg)) for seg in lx]
             pz=[self._rotate_segment(seg,rng.gauss(0,sigma_deg)) for seg in lz]
-            va=self._vp_from_two_segments(px[0],px[1]); vb=self._vp_from_two_segments(pz[0],pz[1])
+            va=solve(px); vb=solve(pz)
             if va is None or vb is None:
                 failed+=1; continue
             fpx=self._pair_focal_pixels(va,vb)
             if fpx is None or not math.isfinite(fpx):
                 failed+=1; continue
             eq35=36.0*fpx/w
-            if 4.0<=eq35<=400.0:vals.append(eq35)
+            if 4.0<=eq35<=400.0: vals.append(eq35)
             else: failed+=1
         vals=sorted(vals)
-        def q(frac):
+        def qv(frac):
             if not vals:return None
             pos=(len(vals)-1)*frac; lo=int(math.floor(pos)); hi=int(math.ceil(pos))
             if lo==hi:return vals[lo]
             t=pos-lo; return vals[lo]*(1-t)+vals[hi]*t
         base={'n':len(vals),'failed_ratio':failed/max(1,failed+len(vals)),
-              'x_angle':self._axis_base_angle_deg('vp1'),'z_angle':self._axis_base_angle_deg('vp2')}
-        # Even when the exact X/Z pair has no valid focal solution, keep a cautious
-        # ensemble tendency if enough tiny guide-angle perturbations produce solutions.
-        # This is used only for a qualitative 'lens feel', never as an exact focal length.
+              'x_angle':self._axis_observation_angle_spread_deg('vp1'),
+              'z_angle':self._axis_observation_angle_spread_deg('vp2'),
+              'x_lines':len(lx),'z_lines':len(lz)}
         if len(vals)<12:
             base.update({'unstable':True})
-            if len(vals)>=4:
-                base.update({'p10':q(0.10),'p50':q(0.50),'p90':q(0.90),'spread':q(0.90)-q(0.10)})
+            if len(vals)>=4: base.update({'p10':qv(0.10),'p50':qv(0.50),'p90':qv(0.90),'spread':qv(0.90)-qv(0.10)})
             return base
-        base.update({'p10':q(0.10),'p50':q(0.50),'p90':q(0.90),'spread':q(0.90)-q(0.10),'unstable':False})
+        base.update({'p10':qv(0.10),'p50':qv(0.50),'p90':qv(0.90),'spread':qv(0.90)-qv(0.10),'unstable':False})
         return base
 
     def _pair_focal_pixels(self, a, b):
@@ -2340,9 +2369,9 @@ class MovieShotAnalyzer(QMainWindow):
             else:
                 persp='かなり弱い'; compression='かなり強い'; feel='望遠'
             conf=f' / 判定信頼度：{confidence}' if confidence else ''
-            return f'ショット分析　レンズ感：{feel}{conf}\nパース感：{persp}　圧縮感：{compression}\nショットサイズ：被写体の画面占有率とは別判定'
+            return f'レンズ感：{feel}{conf}　｜　パース：{persp}　｜　圧縮：{compression}'
         feel=fallback_feel or '判定困難'
-        return f'ショット分析　レンズ感：{feel}（参考）\nパース感 / 圧縮感：数値判定保留\nショットサイズ：被写体の画面占有率とは別判定'
+        return f'レンズ感：{feel}（参考）　｜　パース/圧縮：保留'
 
     def update_lens_estimate(self):
         targets=[x for x in (getattr(self,'analysis_lens',None),getattr(self,'persp_lens',None)) if x is not None]
@@ -2371,7 +2400,14 @@ class MovieShotAnalyzer(QMainWindow):
                     if mm < 100:return '中望遠'
                     return '望遠'
                 kl,km,kh=k(lo),k(mid),k(hi)
-                feel=km if kl==kh else f'{kl}〜{kh}寄り'
+                # Keep the artist-facing qualitative result useful even when the
+                # numerical interval is huge: report the median class plus at most
+                # one adjacent class rather than e.g. '広角〜中望遠'.
+                order=['超広角','広角','標準','中望遠','望遠']; idx=order.index(km)
+                if kl==kh: feel=km
+                elif idx>0 and k(lo)==order[idx-1]: feel=f'{order[idx-1]}〜{km}寄り'
+                elif idx<len(order)-1 and k(hi)==order[idx+1]: feel=f'{km}〜{order[idx+1]}寄り'
+                else: feel=f'{km}寄り'
                 feel_range=(lo,hi)
             ax=sens.get('x_angle') if sens else None; az=sens.get('z_angle') if sens else None
             near_inf=any(a is not None and a < 0.45 for a in (ax,az))
@@ -2384,9 +2420,13 @@ class MovieShotAnalyzer(QMainWindow):
             if hasattr(self,'shot_analysis'): self.shot_analysis.setText(self._shot_analysis_text(fallback_feel=feel))
             return
         cand=' / '.join(f'{x}mm' for x in est['candidates'])
+        sens=est.get('sensitivity') or {}
+        lineinfo=''
+        if sens.get('x_lines',2)>2 or sens.get('z_lines',2)>2:
+            lineinfo=f"   X{sens.get('x_lines',2)}本/Z{sens.get('z_lines',2)}本"
         lens_text=(
             f"{est['eq35']:.1f}mm eq.   H-FOV {est['hfov']:.1f}°\n"
-            f"感度範囲 {est['lo']:.0f}–{est['hi']:.0f}mm   {est['kind']}   信頼度：{est['confidence']}"
+            f"感度 {est['lo']:.0f}–{est['hi']:.0f}mm   {est['kind']}   信頼度：{est['confidence']}{lineinfo}"
         )
         if est.get('instability_reason'):
             lens_text += f"\n⚠ {est['instability_reason']}"
