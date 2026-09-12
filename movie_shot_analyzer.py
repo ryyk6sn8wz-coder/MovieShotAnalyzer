@@ -1189,8 +1189,11 @@ class MovieShotAnalyzer(QMainWindow):
         root=QWidget(); self.setCentralWidget(root)
         # Capture Left/Right/F before child widgets consume them. Numeric/text controls keep their own arrow behavior.
         app=QApplication.instance()
-        if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
-        cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(8,8,8,8); c.setSpacing(4)
+        if app is not None: app.installEventFilter(self)
+        root_v=QVBoxLayout(root); root_v.setContentsMargins(8,8,8,8); root_v.setSpacing(6)
+        main_row=QWidget(); outer=QHBoxLayout(main_row); outer.setContentsMargins(0,0,0,0); outer.setSpacing(8)
+        root_v.addWidget(main_row,1)
+        cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(6,6,6,6); c.setSpacing(2)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
         sub=QLabel('Perspective Tool + Lens Solver v2.0'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
@@ -1219,13 +1222,13 @@ class MovieShotAnalyzer(QMainWindow):
         self.export_batch_button=QPushButton('全画像を一括書き出し'); self.export_batch_button.clicked.connect(self.batch_export_images); c.addWidget(self.export_batch_button)
         self.export_cancel_button=QPushButton('一括書き出しをキャンセル'); self.export_cancel_button.clicked.connect(self.cancel_batch_export); self.export_cancel_button.setEnabled(False); c.addWidget(self.export_cancel_button)
         self.export_progress_label=QLabel('書き出し: 待機中'); self.export_progress_label.setObjectName('note'); self.export_progress_label.setWordWrap(True); c.addWidget(self.export_progress_label)
-        export_note=QLabel('表示中の構図ガイド・パース・緑フレームを画像に重ねてPNG保存します。EYE LEVEL/VP HORIZONはVP1＋VP2確定時のみ出力。編集用ハンドルは出力しません。'); export_note.setObjectName('note'); export_note.setWordWrap(True); c.addWidget(export_note)
         c.addStretch(1)
-        scroll=QScrollArea(); scroll.setObjectName('controlScroll'); scroll.setWidgetResizable(True); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); scroll.setWidget(cw); scroll.setMinimumWidth(235); scroll.setMaximumWidth(275); self.left_panel=scroll; outer.addWidget(scroll,0)
+        scroll=QScrollArea(); scroll.setObjectName('controlScroll'); scroll.setWidgetResizable(True); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); scroll.setWidget(cw); scroll.setMinimumWidth(225); scroll.setMaximumWidth(255); self.left_panel=scroll; outer.addWidget(scroll,0)
         self.left_toggle=QPushButton('‹'); self.left_toggle.setObjectName('panelToggle'); self.left_toggle.setFixedWidth(22); self.left_toggle.setToolTip('左パネルを折りたたむ'); self.left_toggle.clicked.connect(self.toggle_left_panel); outer.addWidget(self.left_toggle,0)
         self.canvas=ImageCanvas(self); outer.addWidget(self.canvas,1)
         self.right_toggle=QPushButton('›'); self.right_toggle.setObjectName('panelToggle'); self.right_toggle.setFixedWidth(22); self.right_toggle.setToolTip('右パネルを折りたたむ'); self.right_toggle.clicked.connect(self.toggle_right_panel); outer.addWidget(self.right_toggle,0)
         self._build_right_tabs(outer)
+        self._build_bottom_view(root_v)
         self._update_nav(); self.update_perspective_labels(); self.update_perspective_panel_state()
 
     def _make_toggle_button(self,text,checked=False,tooltip=''):
@@ -1288,12 +1291,12 @@ class MovieShotAnalyzer(QMainWindow):
 
     def _build_composition_tab(self):
         tab=QWidget(); outer=QVBoxLayout(tab); outer.setContentsMargins(0,0,0,0)
-        sc=QScrollArea(); sc.setWidgetResizable(True); sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); body=QWidget(); c=QVBoxLayout(body); c.setContentsMargins(10,10,10,10); c.setSpacing(7)
+        body=QWidget(); c=QVBoxLayout(body); c.setContentsMargins(7,6,7,6); c.setSpacing(4)
         self.section(c,'基本ガイド')
         basic=QGridLayout(); basic.setSpacing(6)
         specs=[('show_thirds','三分割',True),('show_cross','十字',False),('show_golden','黄金比',False),('show_spiral','黄金螺旋',False),('show_diagonal','対角線',False),('show_triangle','三角構図',False),('show_symmetry','対称軸',False)]
         for i,(attr,label,checked) in enumerate(specs):
-            b=self._make_toggle_button(label,checked); b.toggled.connect(self.refresh); setattr(self,attr,b); basic.addWidget(b,i//2,i%2)
+            b=self._make_toggle_button(label,checked); b.toggled.connect(self.refresh); setattr(self,attr,b); basic.addWidget(b,i//3,i%3)
         c.addLayout(basic)
         note=QLabel('基本ガイドの直線同士の交点には、塗りつぶし○を表示できます。'); note.setObjectName('note'); note.setWordWrap(True); c.addWidget(note)
 
@@ -1301,7 +1304,7 @@ class MovieShotAnalyzer(QMainWindow):
         add=QGridLayout(); add.setSpacing(6)
         specs=[('show_radiating','放射構図'),('show_tunnel','トンネル'),('show_golden_triangle','ゴールデントライアングル'),('show_circle','円構図'),('show_cshape','C字構図'),('show_vshape','V字構図'),('show_double_diagonal','ダブル対角線'),('show_scurve','S字構図'),('show_lshape','L字構図'),('show_pyramid','ピラミッド構図')]
         for i,(attr,label) in enumerate(specs):
-            b=self._make_toggle_button(label,False); b.toggled.connect(self.comp_guide_visibility_changed); setattr(self,attr,b); add.addWidget(b,i//2,i%2)
+            b=self._make_toggle_button(label,False); b.toggled.connect(self.comp_guide_visibility_changed); setattr(self,attr,b); add.addWidget(b,i//3,i%3)
         c.addLayout(add)
         self.edit_comp_guides=QCheckBox('追加構図を編集'); self.edit_comp_guides.setChecked(True); self.edit_comp_guides.toggled.connect(self.comp_edit_toggled); c.addWidget(self.edit_comp_guides)
         self.reset_comp_btn=QPushButton('選択中ガイドを初期位置へ戻す'); self.reset_comp_btn.setEnabled(False); self.reset_comp_btn.clicked.connect(self.reset_selected_comp_guide); c.addWidget(self.reset_comp_btn)
@@ -1316,7 +1319,36 @@ class MovieShotAnalyzer(QMainWindow):
         self.show_points=QCheckBox('基本ガイドの交点○を表示'); self.show_points.setChecked(True); self.show_points.toggled.connect(self.refresh); c.addWidget(self.show_points)
         grid=QGridLayout(); grid.addWidget(QLabel('○サイズ'),0,0); self.point_size=StepControl(2.0,30.0,8.0,0.5); self.point_size.value.valueChanged.connect(self.refresh); grid.addWidget(self.point_size,0,1); c.addLayout(grid)
         row=QHBoxLayout(); pc=QPushButton('○の色'); pc.clicked.connect(self.choose_point_color); row.addWidget(pc); row.addStretch(1); c.addLayout(row)
-        c.addStretch(1); sc.setWidget(body); outer.addWidget(sc); self.right_tabs.addTab(tab,'構図ガイド')
+        c.addStretch(1); outer.addWidget(body); self.right_tabs.addTab(tab,'構図ガイド')
+
+    def _build_bottom_view(self, root_v):
+        self.bottom_view=QWidget(); self.bottom_view.setObjectName('bottomView'); self.bottom_view.setFixedHeight(112)
+        bl=QVBoxLayout(self.bottom_view); bl.setContentsMargins(6,4,6,4); bl.setSpacing(3)
+        head=QHBoxLayout(); title=QLabel('ショット一覧'); title.setObjectName('section'); head.addWidget(title); self.bottom_count=QLabel('0枚'); self.bottom_count.setObjectName('note'); head.addWidget(self.bottom_count); head.addStretch(1)
+        close=QPushButton('下ビューを隠す'); close.setFixedWidth(92); close.clicked.connect(lambda:self.bottom_view.setVisible(False)); head.addWidget(close); bl.addLayout(head)
+        self.thumb_scroll=QScrollArea(); self.thumb_scroll.setWidgetResizable(True); self.thumb_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); self.thumb_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded); self.thumb_scroll.setFixedHeight(78)
+        self.thumb_body=QWidget(); self.thumb_layout=QHBoxLayout(self.thumb_body); self.thumb_layout.setContentsMargins(2,2,2,2); self.thumb_layout.setSpacing(6); self.thumb_layout.addStretch(1); self.thumb_scroll.setWidget(self.thumb_body); bl.addWidget(self.thumb_scroll)
+        root_v.addWidget(self.bottom_view,0)
+
+    def _refresh_bottom_view(self):
+        if not hasattr(self,'thumb_layout'): return
+        while self.thumb_layout.count():
+            item=self.thumb_layout.takeAt(0); w=item.widget()
+            if w is not None: w.deleteLater()
+        for i,p in enumerate(self.paths):
+            b=QPushButton(); b.setCheckable(True); b.setChecked(i==self.current_index); b.setFixedSize(104,64); b.setToolTip(f'{i+1}: {p.name}')
+            try:
+                with Image.open(p) as im:
+                    pm=pil_to_pixmap(im.convert('RGB')); pm=pm.scaled(96,56,Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation); b.setIcon(pm); b.setIconSize(pm.size())
+            except Exception:
+                b.setText(str(i+1))
+            b.clicked.connect(lambda checked=False,n=i:self._jump_to_image(n)); self.thumb_layout.addWidget(b)
+        self.thumb_layout.addStretch(1)
+        if hasattr(self,'bottom_count'): self.bottom_count.setText(f'{len(self.paths)}枚')
+
+    def _jump_to_image(self,index):
+        if 0 <= index < len(self.paths) and index != self.current_index:
+            self._save_current_frame(); self.save_current_perspective(); self.current_index=index; self.load_current()
 
     def set_vp_ray_visible(self,key,value):
         self.vp_ray_visible[key]=bool(value); self.refresh()
@@ -1625,7 +1657,7 @@ class MovieShotAnalyzer(QMainWindow):
             k=str(p.resolve()).lower()
             if k not in seen: seen.add(k); uniq.append(p)
         if not uniq:self.statusBar().showMessage('対応画像が見つかりませんでした',5000); return
-        self.paths=uniq; self.current_index=0; self.load_current()
+        self.paths=uniq; self.current_index=0; self.load_current(); self._refresh_bottom_view()
     def load_current(self):
         if not(0<=self.current_index<len(self.paths)):return
         p=self.paths[self.current_index]
@@ -1662,7 +1694,7 @@ class MovieShotAnalyzer(QMainWindow):
             self.update_perspective_panel_state(); self.update_perspective_labels()
             self.update_display(); self.file_label.setText(f'{p.name}\n{self.current_index+1} / {len(self.paths)}\n{self.original.width} × {self.original.height} px'); self.statusBar().showMessage(str(p))
         except Exception as ex:self.file_label.setText(f'読み込み失敗: {p.name}\n{ex}')
-        self._update_nav()
+        self._update_nav(); self._refresh_bottom_view()
     def _display_adjusted_image(self):
         if self.original is None:return None
         im=self.original.copy(); im=ImageEnhance.Brightness(im).enhance(self.sliders['brightness'].value()/100); im=ImageEnhance.Contrast(im).enhance(self.sliders['contrast'].value()/100); im=ImageEnhance.Color(im).enhance(self.sliders['saturation'].value()/100)
