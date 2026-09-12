@@ -1,33 +1,45 @@
-# Movie Shot Analyzer — Camera Calibration Solver v1.3.2 Z Stable
+# Movie Shot Analyzer — v1.4 Perspective + Lens
 
-Base: v1.3.1 VP3 Stable
+Base: `CameraCalibrationSolver v1.3.2 Z Stable`
 
-## Main fixes
-- 1本目のパース線を独立コピーでロック保持
-- 2本目開始時に1本目を必ず復元するため、1本目が消える/上書きされる症状を防止
-- Z軸（奥行き）に追加補助線を最大6本追加可能
-- Z軸は基本2本 + 補助線をHomogeneous Least Squares + IRLSでロバスト推定
-- 外れ気味の補助線の重みを自動的に下げる
-- Z補助線は元の2本を置換せず、観測を追加するだけ
-- レンズ推定側もZ補助線を含む同じVP2を使用
+## v1.4 の方針
+パース操作とレンズ解析を分離しました。
 
-## Preserved
-- v1.3.1のVP3 Stable仕様
+### Perspective Tool（作画用）
+- X / Z / Y をそれぞれ2本の手動線から独立して解決
+- 3軸を共有カメラ解で勝手に補正しない
+- 確定した VP1 / VP2 / VP3 の色付きマーカーを直接ドラッグして微調整可能
+- VPを動かすと、その軸の放射線・グリッドが追従
+- Y / VP3 は作画用として独立。自分で引いた縦パースを優先
+- Z補助線（最大6本）のロバスト推定を維持
+
+### Lens Solver（fSpy型の基本2VP方式を参考）
+- X + Z の現在の2消失点だけで焦点距離 / H-FOVを推定
+- 主点は画像中央をデフォルト
+- Y / VP3 はレンズ計算に一切入れない
+- X/ZのVPを直接動かした場合はレンズ値も再計算
+- YのVPを動かしてもレンズ値は変化しない
+- 35mm換算、H-FOV、推定レンジ、レンズ傾向、信頼度を表示
+
+## UI
+- 右パネルをコンパクト化
+- 軸ボタン: `X 水平 / Z 奥行 / Y 垂直`
+- Z補助線を1行化
+- グリッド本数操作をコンパクト化
+- `カメラ / レンズ` を統合
+- VP座標など診断情報は `詳細 ▼` に収納
+- 横スクロールなし
+
+## 維持した操作
+- V5.30系の2ストローク鉛筆入力
+- 1本目のロック保持
 - Space: 一時手のひら
 - H: 手のひら固定
 - Ctrl/Cmd+Z: パースUndo
 - Ctrl/Cmd+Shift+Z: Redo
 - 自動パース判定データなし
+- 黒帯自動検出 / 緑フレーム / 一括書き出し
 
-## Comparison references
-問題が出る場合は以下と比較:
-- MovieShotAnalyzer_CameraCalibrationSolver_v1_3_1_VP3Stable_GitHub.zip
-- MovieShotAnalyzer_CameraCalibrationSolver_v1_3_HandUndo_LensCompare_GitHub.zip
-- 手動2本入力の基準挙動: MovieShotAnalyzer_V5_30_RestoredV5_11ManualPerspective_GitHub.zip
-
-## Z補助線の使い方
-1. X軸とZ軸を通常どおり2本ずつ確定
-2. 「Z補助線を追加」を押す
-3. 机・窓枠・床・棚など、同じ奥行き方向のエッジを1本ドラッグ
-4. 必要なら2〜6本追加
-5. VP2 / Camera Solver / レンズ推定がその都度再計算
+## Windows EXE
+GitHub Actions の `Build Windows EXE` を実行してください。
+Artifact `MovieShotAnalyzer-Windows` の中には `MovieShotAnalyzer.exe` が直接入ります（二重ZIPにしません）。

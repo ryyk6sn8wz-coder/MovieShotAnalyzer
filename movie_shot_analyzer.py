@@ -736,10 +736,15 @@ class ImageCanvas(QWidget):
 
     def _perspective_hit(self,pos):
         if not self.owner.show_perspective.isChecked() or self.pixmap is None:return None
+        for name,xy in (('vp1',self.owner.vp1),('vp2',self.owner.vp2),('vp3',self.owner.vp3)):
+            if not self.owner._persp_axis_complete.get(name,False): continue
+            if getattr(self.owner,'vp_at_infinity',{}).get(name,False): continue
+            pt=self._image_norm_to_point(*xy)
+            if math.hypot(pos.x()-pt.x(),pos.y()-pt.y()) < 14:
+                return ('perspective_vp',name)
         if self.owner.show_perspective_handles.isChecked():
             name=self.owner.active_perspective_axis; li=self.owner.perspective_step
-            if li==1 and not self.owner._persp_anchor_touched.get((name,1),set()):
-                return None
+            if li==1 and not self.owner._persp_anchor_touched.get((name,1),set()): return None
             line=self.owner.perspective_lines[name][li]
             for ei,xy in enumerate(line):
                 pt=self._image_norm_to_point(*xy)
@@ -942,11 +947,14 @@ class ImageCanvas(QWidget):
             if li==1: self.owner.solve_perspective_axis(name)
         elif typ=='perspective_vp':
             name=self.drag_item[1]; nx,ny=self._point_to_image_norm(pos)
-            # Allow off-image VPs. Bounds keep the marker recoverable in the workspace.
             nx=max(-3.0,min(4.0,nx)); ny=max(-2.0,min(3.0,ny))
             if name=='vp1': self.owner.vp1=(nx,ny)
             elif name=='vp2': self.owner.vp2=(nx,ny)
             else: self.owner.vp3=(nx,ny)
+            self.owner.vp_at_infinity[name]=False
+            if name=='vp3': self.owner.vp3_at_infinity=False
+            self.owner.align_calibration_lines_to_vp(name)
+            self.owner.recompute_lens_from_current_vps()
             self.owner.update_perspective_labels()
         elif typ=='perspective_anchor':
             name,li,ei=self.drag_item[1],self.drag_item[2],self.drag_item[3]
@@ -1104,7 +1112,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — Camera Calibration Solver v1.3.2 Z Stable'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — v1.4 Perspective + Lens'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         # Pure Manual Perspective: no automatic-analysis data and no learning data
@@ -1150,7 +1158,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.batch_export_cancelled=False
         self.batch_export_executor=ThreadPoolExecutor(max_workers=max(2,min(8,(os.cpu_count() or 4))))
         self.auto_frame_on_load=True
-        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('V5.16 — 建築長線強化 + ワイド表示 + ←→画像送り')
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('v1.4 — VanishPoint型パース操作 + X/Zレンズ解析')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
@@ -1160,7 +1168,7 @@ class MovieShotAnalyzer(QMainWindow):
         if app is not None: app.installEventFilter(self); outer=QHBoxLayout(root); outer.setContentsMargins(8,8,8,8); outer.setSpacing(8)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(12,12,12,12); c.setSpacing(7)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('Pure Manual Perspective v2'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('Perspective Tool + Lens Solver v1.4'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1210,77 +1218,42 @@ class MovieShotAnalyzer(QMainWindow):
 
     def _build_perspective_tab(self):
         tab=QWidget(); outer=QVBoxLayout(tab); outer.setContentsMargins(0,0,0,0)
-        sc=QScrollArea()
-        sc.setWidgetResizable(True)
-        sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        sc.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        body=QWidget()
-        body.setMinimumWidth(0)
-        body.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        lay=QVBoxLayout(body); lay.setContentsMargins(10,10,10,10); lay.setSpacing(9)
+        sc=QScrollArea(); sc.setWidgetResizable(True); sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); sc.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        body=QWidget(); body.setMinimumWidth(0); body.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred)
+        lay=QVBoxLayout(body); lay.setContentsMargins(9,9,9,9); lay.setSpacing(7)
         self.show_perspective=QCheckBox(); self.show_perspective.setChecked(True); self.show_perspective.hide()
         self.show_perspective_handles=QCheckBox(); self.show_perspective_handles.setChecked(True); self.show_perspective_handles.hide()
         self.perspective_pencil=QCheckBox(); self.perspective_pencil.setChecked(True); self.perspective_pencil.hide()
         self.show_perspective_grid=QCheckBox(); self.show_perspective_grid.setChecked(True); self.show_perspective_grid.hide()
-        self.section(lay,'カメラキャリブレーション')
-        axisrow=QHBoxLayout(); self.axis_buttons={}
-        tips={
-            'vp1':'VP1を設定。1本目をドラッグで引き、続けて2本目もドラッグで引くとVPを確定します。',
-            'vp2':'VP2を設定。別方向の平行エッジ2本から消失点を求めます。',
-            'vp3':'VP3を設定。主に垂直方向の収束を2本の線から求めます。'}
-        for key,label in [('vp1','X軸（水平・左右方向）'),('vp2','Z軸（奥行き方向）'),('vp3','Y軸（垂直・上下方向）')]:
-            b=QPushButton(label)
-            b.setCheckable(True)
-            b.setMinimumWidth(0)
-            b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-            b.setStyleSheet('QPushButton{font-size:11px;padding:7px 4px;}')
-            b.setToolTip(tips[key])
-            b.clicked.connect(lambda checked,k=key:self.set_perspective_axis(k))
-            axisrow.addWidget(b,1)
-            self.axis_buttons[key]=b
+        axisrow=QHBoxLayout(); axisrow.setSpacing(5); self.axis_buttons={}
+        tips={'vp1':'X軸（水平・左右方向）。2本の基準線からVP1を決めます。確定後はVP1自体をドラッグできます。','vp2':'Z軸（奥行き方向）。2本の基準線からVP2を決めます。X＋Zがレンズ推定に使われます。','vp3':'Y軸（垂直・上下方向）。作画用VP3。レンズ推定には影響しません。'}
+        for key,label in [('vp1','X 水平'),('vp2','Z 奥行'),('vp3','Y 垂直')]:
+            b=QPushButton(label); b.setCheckable(True); b.setMinimumWidth(0); b.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed); b.setToolTip(tips[key]); b.clicked.connect(lambda checked,k=key:self.set_perspective_axis(k)); axisrow.addWidget(b,1); self.axis_buttons[key]=b
         lay.addLayout(axisrow)
-        self.persp_step_label=QLabel('1本目：画像上をドラッグして引く'); self.persp_step_label.setObjectName('fileLabel'); lay.addWidget(self.persp_step_label)
-        self.persp_label=QLabel('未解決'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); self.persp_label.setMinimumWidth(0); lay.addWidget(self.persp_label)
-        row=QHBoxLayout()
-        resetaxis=QPushButton('選択軸をリセット'); resetaxis.setMinimumWidth(0); resetaxis.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed); resetaxis.clicked.connect(self.reset_active_perspective_axis)
-        resetall=QPushButton('全てリセット'); resetall.setMinimumWidth(0); resetall.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed); resetall.clicked.connect(self.reset_perspective)
-        row.addWidget(resetaxis,1); row.addWidget(resetall,1); lay.addLayout(row)
-
-        zrow=QHBoxLayout()
-        self.z_refine_btn=QPushButton('Z補助線を追加')
-        self.z_refine_btn.setToolTip('Z軸の追加エッジを1本描きます。最大6本。複数線からVP2をロバスト推定します。')
-        self.z_refine_btn.clicked.connect(self.arm_z_refinement_line)
-        self.z_clear_btn=QPushButton('Z補助線クリア')
-        self.z_clear_btn.clicked.connect(self.clear_z_refinement_lines)
-        zrow.addWidget(self.z_refine_btn,1); zrow.addWidget(self.z_clear_btn,1); lay.addLayout(zrow)
-        self.z_refine_label=QLabel('Z補助線: 0本')
-        self.z_refine_label.setObjectName('note'); lay.addWidget(self.z_refine_label)
-
+        self.persp_step_label=QLabel('X 1本目：画像上をドラッグ'); self.persp_step_label.setObjectName('fileLabel'); self.persp_step_label.setWordWrap(True); lay.addWidget(self.persp_step_label)
+        self.persp_status_label=QLabel('X —   Z —   Y —'); self.persp_status_label.setObjectName('note'); self.persp_status_label.setWordWrap(True); lay.addWidget(self.persp_status_label)
+        row=QHBoxLayout(); row.setSpacing(5); resetaxis=QPushButton('選択軸リセット'); resetaxis.clicked.connect(self.reset_active_perspective_axis); resetall=QPushButton('全リセット'); resetall.clicked.connect(self.reset_perspective); row.addWidget(resetaxis,1); row.addWidget(resetall,1); lay.addLayout(row)
+        zrow=QHBoxLayout(); zrow.setSpacing(5); self.z_refine_label=QLabel('Z補助 0本'); self.z_refine_label.setObjectName('note'); zrow.addWidget(self.z_refine_label,1); self.z_refine_btn=QPushButton('＋追加'); self.z_refine_btn.setToolTip('Z軸の追加エッジを1本描きます。最大6本。'); self.z_refine_btn.clicked.connect(self.arm_z_refinement_line); zrow.addWidget(self.z_refine_btn); self.z_clear_btn=QPushButton('クリア'); self.z_clear_btn.clicked.connect(self.clear_z_refinement_lines); zrow.addWidget(self.z_clear_btn); lay.addLayout(zrow)
         self.section(lay,'グリッド / 放射線')
         self.vp_ray_checks={}; self.vp_ray_count_labels={}; self.vp_ray_color_buttons={}
-        for key,label in [('vp1','X軸'),('vp2','Z軸'),('vp3','Y軸')]:
-            row=QHBoxLayout()
-            chk=QCheckBox(f'{label} グリッド'); chk.setChecked(self.vp_ray_visible[key]); chk.toggled.connect(lambda v,k=key:self.set_vp_ray_visible(k,v)); row.addWidget(chk); self.vp_ray_checks[key]=chk
-            minus=QPushButton('−'); minus.setFixedWidth(34); minus.clicked.connect(lambda checked=False,k=key:self.change_vp_ray_count(k,-1)); row.addWidget(minus)
-            val=QLabel(str(self.vp_ray_counts[key])); val.setAlignment(Qt.AlignmentFlag.AlignCenter); val.setFixedWidth(30); row.addWidget(val); self.vp_ray_count_labels[key]=val
-            plus=QPushButton('+'); plus.setFixedWidth(34); plus.clicked.connect(lambda checked=False,k=key:self.change_vp_ray_count(k,1)); row.addWidget(plus)
-            col=QPushButton('色'); col.setFixedWidth(42); col.clicked.connect(lambda checked=False,k=key:self.choose_vp_ray_color(k)); row.addWidget(col); self.vp_ray_color_buttons[key]=col
-            lay.addLayout(row)
+        for key,label in [('vp1','X'),('vp2','Z'),('vp3','Y')]:
+            row=QHBoxLayout(); row.setSpacing(4); chk=QCheckBox(label); chk.setChecked(self.vp_ray_visible[key]); chk.setFixedWidth(30); chk.toggled.connect(lambda v,k=key:self.set_vp_ray_visible(k,v)); row.addWidget(chk); self.vp_ray_checks[key]=chk; minus=QPushButton('−'); minus.setFixedWidth(31); minus.clicked.connect(lambda checked=False,k=key:self.change_vp_ray_count(k,-1)); row.addWidget(minus); val=QLabel(str(self.vp_ray_counts[key])); val.setAlignment(Qt.AlignmentFlag.AlignCenter); val.setFixedWidth(28); row.addWidget(val); self.vp_ray_count_labels[key]=val; plus=QPushButton('+'); plus.setFixedWidth(31); plus.clicked.connect(lambda checked=False,k=key:self.change_vp_ray_count(k,1)); row.addWidget(plus); col=QPushButton('色'); col.setFixedWidth(38); col.clicked.connect(lambda checked=False,k=key:self.choose_vp_ray_color(k)); row.addWidget(col); self.vp_ray_color_buttons[key]=col; row.addStretch(1); lay.addLayout(row)
         self._update_vp_color_buttons()
-        row=QHBoxLayout(); row.addWidget(QLabel('パース線の太さ')); self.perspective_line_width=StepControl(0.5,5.0,0.5,0.5); self.perspective_line_width.value.valueChanged.connect(self.refresh); row.addWidget(self.perspective_line_width); lay.addLayout(row)
-        row=QHBoxLayout(); row.addWidget(QLabel('パース線の透明度')); self.perspective_alpha=QSlider(Qt.Orientation.Horizontal); self.perspective_alpha.setRange(0,100); self.perspective_alpha.setValue(70); self.perspective_alpha.valueChanged.connect(self.refresh); row.addWidget(self.perspective_alpha,1); self.perspective_alpha_label=QLabel('70%'); self.perspective_alpha_label.setFixedWidth(42); self.perspective_alpha.valueChanged.connect(lambda v:self.perspective_alpha_label.setText(f'{v}%')); row.addWidget(self.perspective_alpha_label); lay.addLayout(row)
-        self.section(lay,'カメラ解')
-        self.camera_solve_label=QLabel('X/Zの2軸から解けます。Yを追加すると3軸で再計算します。')
-        self.camera_solve_label.setObjectName('fileLabel'); self.camera_solve_label.setWordWrap(True); self.camera_solve_label.setMinimumWidth(0); lay.addWidget(self.camera_solve_label)
-        solve_btn=QPushButton('カメラを再計算')
-        solve_btn.clicked.connect(self.solve_camera_calibration); lay.addWidget(solve_btn)
-        self.section(lay,'レンズ推定（35mm換算）')
-        self.persp_lens=QLabel('VP1 と VP2 を確定すると推定を開始します。'); self.persp_lens.setObjectName('fileLabel'); self.persp_lens.setWordWrap(True); self.persp_lens.setMinimumWidth(0); lay.addWidget(self.persp_lens)
-        self.persp_lens_detail=QLabel('レンズは手動X/Zを主推定。Camera Solver値は比較用です。'); self.persp_lens_detail.setObjectName('note'); self.persp_lens_detail.setWordWrap(True); self.persp_lens_detail.setMinimumWidth(0); lay.addWidget(self.persp_lens_detail)
+        row=QHBoxLayout(); row.addWidget(QLabel('線幅')); self.perspective_line_width=StepControl(0.5,5.0,0.5,0.5); self.perspective_line_width.value.valueChanged.connect(self.refresh); row.addWidget(self.perspective_line_width); lay.addLayout(row)
+        row=QHBoxLayout(); row.addWidget(QLabel('透明度')); self.perspective_alpha=QSlider(Qt.Orientation.Horizontal); self.perspective_alpha.setRange(0,100); self.perspective_alpha.setValue(70); self.perspective_alpha.valueChanged.connect(self.refresh); row.addWidget(self.perspective_alpha,1); self.perspective_alpha_label=QLabel('70%'); self.perspective_alpha_label.setFixedWidth(38); self.perspective_alpha.valueChanged.connect(lambda v:self.perspective_alpha_label.setText(f'{v}%')); row.addWidget(self.perspective_alpha_label); lay.addLayout(row)
+        self.section(lay,'カメラ / レンズ')
+        self.persp_lens=QLabel('X＋Zを確定するとレンズ推定を開始します。'); self.persp_lens.setObjectName('fileLabel'); self.persp_lens.setWordWrap(True); self.persp_lens.setMinimumWidth(0); lay.addWidget(self.persp_lens)
+        self.camera_solve_label=QLabel('主点：画像中央 / Yは作画用として独立'); self.camera_solve_label.setObjectName('note'); self.camera_solve_label.setWordWrap(True); lay.addWidget(self.camera_solve_label)
+        row=QHBoxLayout(); solve_btn=QPushButton('再計算'); solve_btn.clicked.connect(self.solve_camera_calibration); row.addWidget(solve_btn); self.persp_detail_toggle=QPushButton('詳細 ▼'); self.persp_detail_toggle.setCheckable(True); self.persp_detail_toggle.toggled.connect(self.toggle_perspective_details); row.addWidget(self.persp_detail_toggle); lay.addLayout(row)
+        self.persp_detail_widget=QWidget(); detail_lay=QVBoxLayout(self.persp_detail_widget); detail_lay.setContentsMargins(0,0,0,0); detail_lay.setSpacing(4); self.persp_label=QLabel('未解決'); self.persp_label.setObjectName('note'); self.persp_label.setWordWrap(True); detail_lay.addWidget(self.persp_label); self.persp_lens_detail=QLabel('レンズはX/Zの現在VPのみを使用。Y/VP3はレンズ値を変更しません。'); self.persp_lens_detail.setObjectName('note'); self.persp_lens_detail.setWordWrap(True); detail_lay.addWidget(self.persp_lens_detail); self.persp_detail_widget.setVisible(False); lay.addWidget(self.persp_detail_widget)
         self.section(lay,'表示')
         row=QHBoxLayout(); row.addWidget(QLabel('作業領域')); self.workspace_scale=QSlider(Qt.Orientation.Horizontal); self.workspace_scale.setRange(100,400); self.workspace_scale.setValue(100); self.workspace_scale.valueChanged.connect(self.refresh); row.addWidget(self.workspace_scale,1); self.workspace_label=QLabel('100%'); self.workspace_label.setFixedWidth(46); self.workspace_scale.valueChanged.connect(lambda v:self.workspace_label.setText(f'{v}%')); row.addWidget(self.workspace_label); lay.addLayout(row)
-        row=QHBoxLayout(); row.addWidget(QLabel('ホイールズーム')); self.zoom_label=QLabel('100%'); row.addWidget(self.zoom_label); zreset=QPushButton('100%'); zreset.clicked.connect(self.reset_zoom); row.addWidget(zreset); lay.addLayout(row)
+        row=QHBoxLayout(); row.addWidget(QLabel('ズーム')); self.zoom_label=QLabel('100%'); row.addWidget(self.zoom_label); zreset=QPushButton('100%'); zreset.clicked.connect(self.reset_zoom); row.addWidget(zreset); lay.addLayout(row)
         lay.addStretch(1); sc.setWidget(body); outer.addWidget(sc); self.right_tabs.addTab(tab,'パース・レンズ')
+
+    def toggle_perspective_details(self,on):
+        if hasattr(self,'persp_detail_widget'): self.persp_detail_widget.setVisible(bool(on))
+        if hasattr(self,'persp_detail_toggle'): self.persp_detail_toggle.setText('詳細 ▲' if on else '詳細 ▼')
 
     def _build_composition_tab(self):
         tab=QWidget(); outer=QVBoxLayout(tab); outer.setContentsMargins(0,0,0,0)
@@ -1366,26 +1339,9 @@ class MovieShotAnalyzer(QMainWindow):
         self._restoring_perspective_history=True
         try:
             self.vp1=tuple(st['vp1']); self.vp2=tuple(st['vp2']); self.vp3=tuple(st['vp3'])
-            self.eye_level_y=float(st['eye'])
-            self.perspective_lines=copy.deepcopy(st['lines'])
-            self._persp_axis_complete=dict(st['complete'])
-            self._persp_anchor_touched=copy.deepcopy(st.get('touched',{}))
-            self.active_perspective_axis=st.get('active','vp1')
-            self.perspective_step=int(st.get('step',0))
-            self.vp_at_infinity=dict(st.get('infinity',{'vp1':False,'vp2':False,'vp3':False}))
-            self.vp3_at_infinity=bool(st.get('vp3_at_infinity',False))
-            self.perspective_extra_lines=copy.deepcopy(st.get('extra_lines',{'vp2':[]}))
-            self._persp_line1_locked=copy.deepcopy(st.get('line1_locked',{'vp1':None,'vp2':None,'vp3':None}))
-            self.z_refine_mode=False
-            self.update_z_refine_label()
-            self.camera_solution=None; self.camera_inf_dir={'vp1':None,'vp2':None,'vp3':None}; self.camera_solve_error=None
-
-            complete=[k for k in ('vp1','vp2','vp3') if self._persp_axis_complete.get(k,False)]
-            if len(complete)>=2:self.solve_camera_calibration()
-            else:
-                for k in complete:self.solve_perspective_axis(k)
-                self.update_perspective_labels()
-            self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
+            self.eye_level_y=float(st['eye']); self.perspective_lines=copy.deepcopy(st['lines']); self._persp_axis_complete=dict(st['complete']); self._persp_anchor_touched=copy.deepcopy(st['touched']); self.active_perspective_axis=st.get('active','vp1'); self.perspective_step=int(st.get('step',0)); self.vp_at_infinity=dict(st.get('infinity',{'vp1':False,'vp2':False,'vp3':False})); self.vp3_at_infinity=bool(st.get('vp3_at_infinity',False)); self.perspective_extra_lines=copy.deepcopy(st.get('extra_lines',{'vp2':[]})); self._persp_line1_locked=copy.deepcopy(st.get('line1_locked',{'vp1':None,'vp2':None,'vp3':None}))
+            self.z_refine_mode=False; self.update_z_refine_label(); self.camera_solution=None; self.camera_inf_dir={'vp1':None,'vp2':None,'vp3':None}; self.camera_solve_error=None
+            self.recompute_lens_from_current_vps(); self.update_perspective_labels(); self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
         finally:
             self._restoring_perspective_history=False
 
@@ -1406,7 +1362,7 @@ class MovieShotAnalyzer(QMainWindow):
     def update_z_refine_label(self):
         if hasattr(self,'z_refine_label'):
             n=len(getattr(self,'perspective_extra_lines',{}).get('vp2',[]))
-            self.z_refine_label.setText(f'Z補助線: {n}本' + (' / 次の1本を描画してください' if getattr(self,'z_refine_mode',False) else ''))
+            self.z_refine_label.setText(f'Z補助 {n}本' + (' / 描画待ち' if getattr(self,'z_refine_mode',False) else ''))
 
     def arm_z_refinement_line(self):
         arr=self.perspective_extra_lines.setdefault('vp2',[])
@@ -1431,18 +1387,11 @@ class MovieShotAnalyzer(QMainWindow):
         self.save_perspective(); self.refresh()
 
     def recompute_after_z_refinement(self):
-        # Recompute VP2 from all Z observations, then rebuild camera without altering
-        # the user's base strokes.
         if self._persp_axis_complete.get('vp2'):
             q=self._axis_observation_h('vp2')
             if q is not None and abs(float(q[2]))>=1e-9 and self.original is not None:
-                w=float(self.original.width); h=float(self.original.height)
-                self.vp2=(float(q[0]/q[2])/w,float(q[1]/q[2])/h)
-        if sum(1 for k in ('vp1','vp2','vp3') if self._persp_axis_complete.get(k,False))>=2:
-            self.solve_camera_calibration()
-        else:
-            self.update_perspective_labels()
-        self.update_perspective_panel_state()
+                w=float(self.original.width); h=float(self.original.height); self.vp2=(float(q[0]/q[2])/w,float(q[1]/q[2])/h); self.vp_at_infinity['vp2']=False
+        self.recompute_lens_from_current_vps(); self.update_perspective_labels(); self.update_perspective_panel_state()
 
     def set_perspective_axis(self,name):
         self.active_perspective_axis=name
@@ -1504,10 +1453,10 @@ class MovieShotAnalyzer(QMainWindow):
     def update_perspective_panel_state(self):
         if not hasattr(self,'axis_buttons'): return
         for k,b in self.axis_buttons.items(): b.setChecked(k==self.active_perspective_axis)
-        lab=self.active_perspective_axis.upper()
+        lab={'vp1':'X','vp2':'Z','vp3':'Y'}.get(self.active_perspective_axis,self.active_perspective_axis.upper())
         if hasattr(self,'persp_step_label'):
             if self._persp_axis_complete.get(self.active_perspective_axis,False):
-                self.persp_step_label.setText(f'{lab} 完了：白○で微調整')
+                self.persp_step_label.setText(f'{lab} 完了：VP●または白○をドラッグして微調整')
             elif self.perspective_step==0:
                 self.persp_step_label.setText(f'{lab} 1本目：短いエッジでもOK・ドラッグして基準線')
             else:
@@ -1516,7 +1465,7 @@ class MovieShotAnalyzer(QMainWindow):
         defaults=self.default_perspective_lines(); name=self.active_perspective_axis
         import copy; self.perspective_lines[name]=copy.deepcopy(defaults[name]); self._persp_axis_complete[name]=False; self.vp_at_infinity[name]=False; self.vp3_at_infinity=self.vp_at_infinity['vp3']; self._persp_anchor_touched[(name,0)]=set(); self._persp_anchor_touched.pop((name,1),None); self._persp_line1_locked[name]=None
         if name=='vp2': self.perspective_extra_lines['vp2']=[]; self.z_refine_mode=False; self.update_z_refine_label()
-        self.perspective_step=0; self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
+        self.perspective_step=0; self.recompute_lens_from_current_vps(); self.update_perspective_labels(); self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
 
     def _style(self):
         self.setStyleSheet('''QMainWindow,QWidget{background:#20242b;color:#e8edf3}#controlsWidget{background:#20242b}#controlScroll{border:1px solid #343a43;background:#20242b}#appTitle{font-size:20px;font-weight:700}#panelTitle{font-size:18px;font-weight:700}#rightPanel{background:#1b1f26;border:1px solid #343a43}QTabWidget::pane{border:1px solid #343a43;background:#1b1f26}QTabBar::tab{background:#272d36;border:1px solid #3e4652;padding:9px 12px;margin-right:2px}QTabBar::tab:selected{background:#2d6cdf;color:white}QPushButton:checked{background:#2d6cdf;border-color:#68a0ff;color:white}#subtitle,#note{color:#aeb7c4}#section{font-size:14px;font-weight:700;color:#d9e2ec;margin-top:8px;border-top:1px solid #3b424d;padding-top:8px}#fileLabel{background:#171a20;border:1px solid #343a43;border-radius:5px;padding:8px}QPushButton{background:#303641;border:1px solid #48505d;border-radius:5px;padding:7px}QPushButton:hover{background:#3a424f}#panelToggle{padding:2px;font-size:17px;font-weight:700;background:#252b34;border-radius:3px}QPushButton:disabled{color:#69717c;background:#272b32}QLabel{min-height:20px;padding-top:2px;padding-bottom:2px}QCheckBox{min-height:22px;padding:3px 1px}QDoubleSpinBox{background:#171a20;border:1px solid #48505d;padding:4px}QSlider::groove:horizontal{height:4px;background:#3b424d}QSlider::handle:horizontal{width:14px;margin:-5px 0;background:#8ab4f8;border-radius:7px}QScrollBar:vertical{background:#20242b;width:12px}QScrollBar::handle:vertical{background:#4a5260;min-height:28px;border-radius:5px}QStatusBar{background:#171a20;color:#aeb7c4}''')
@@ -1676,6 +1625,7 @@ class MovieShotAnalyzer(QMainWindow):
             self.z_refine_mode=False
             self.active_perspective_axis='vp1'; self.perspective_step=1 if self._persp_axis_complete.get('vp1',False) else 0
             self.update_z_refine_label()
+            self.recompute_lens_from_current_vps()
             self.update_perspective_panel_state(); self.update_perspective_labels()
             self.update_display(); self.file_label.setText(f'{p.name}\n{self.current_index+1} / {len(self.paths)}\n{self.original.width} × {self.original.height} px'); self.statusBar().showMessage(str(p))
         except Exception as ex:self.file_label.setText(f'読み込み失敗: {p.name}\n{ex}')
@@ -1984,243 +1934,81 @@ class MovieShotAnalyzer(QMainWindow):
             return None
         return math.sqrt(sum(e*e for e in errs)/len(errs))
 
-    def solve_camera_calibration(self):
-        """Site-style pure-manual camera calibration.
-
-        The six manual lines are observations.  We solve one shared intrinsic camera
-        (principal point + focal length), back-project the X/Y/Z vanishing directions,
-        fit the nearest orthonormal world-axis frame, then re-project one coherent
-        X/Y/Z vanishing-point system.  No automatic image analysis or learned data is used.
-        """
-        if self.original is None or np is None:
+    def recompute_lens_from_current_vps(self):
+        if self.original is None:return False
+        if not (self._persp_axis_complete.get('vp1',False) and self._persp_axis_complete.get('vp2',False)):
+            self.camera_solution=None; self.camera_solve_error=None
+            if hasattr(self,'camera_solve_label'): self.camera_solve_label.setText('主点：画像中央 / X＋Zでレンズ解析 / Yは作画用')
             return False
-
-        complete=[k for k in ('vp1','vp2','vp3') if self._persp_axis_complete.get(k,False)]
-        if len(complete)<2:
-            if hasattr(self,'camera_solve_label'):
-                self.camera_solve_label.setText('X/Zなど2軸以上を確定してください。')
+        if self.vp_at_infinity.get('vp1',False) or self.vp_at_infinity.get('vp2',False):
+            self.camera_solution=None; self.camera_solve_error=None
+            if hasattr(self,'camera_solve_label'): self.camera_solve_label.setText('XまたはZが平行方向のためレンズ推定は保留です。')
             return False
-
-        obs={k:self._axis_observation_h(k) for k in complete}
-        if any(obs[k] is None for k in complete):
+        fpx=self._pair_focal_pixels(self.vp1,self.vp2)
+        if fpx is None:
+            self.camera_solution=None; self.camera_solve_error=None
+            if hasattr(self,'camera_solve_label'): self.camera_solve_label.setText('X/Zの配置では中心主点モデルのレンズ解が成立しません。')
             return False
-
-        w=float(self.original.width); h=float(self.original.height)
-        cx0=w*0.5; cy0=h*0.5
-
-        # VP3 stability rule:
-        # Once X + Z are complete, they define the core camera.
-        # Confirming Y/VP3 must NOT re-optimise principal point/focal length or move X/Z.
-        # Y is derived orthogonally from the locked X/Z solution; the drawn VP3 is used
-        # only to choose the Y sign and to report fit error.
-        lock_xz = bool(
-            self._persp_axis_complete.get('vp1',False)
-            and self._persp_axis_complete.get('vp2',False)
-        )
-
-        # Initial focal estimate from any finite orthogonal pair using the centered-principal-point formula.
-        f_candidates=[]
-        for i,k1 in enumerate(complete):
-            q1=obs[k1]
-            if abs(float(q1[2]))<1e-8: continue
-            v1=(float(q1[0]/q1[2]),float(q1[1]/q1[2]))
-            for k2 in complete[i+1:]:
-                q2=obs[k2]
-                if abs(float(q2[2]))<1e-8: continue
-                v2=(float(q2[0]/q2[2]),float(q2[1]/q2[2]))
-                f2=-((v1[0]-cx0)*(v2[0]-cx0)+(v1[1]-cy0)*(v2[1]-cy0))
-                if math.isfinite(f2) and f2>25.0:
-                    f_candidates.append(math.sqrt(f2))
-        f0=sorted(f_candidates)[len(f_candidates)//2] if f_candidates else w
-
-        # With only two axes the principal point is under-constrained, so keep it centered.
-        # With all three axes, search cx/cy/f for the K that makes the three back-projected
-        # directions maximally orthogonal.
-        def objective(cx,cy,f):
-            dirs=[]
-            for k in complete:
-                d=self._camera_dir_from_h(obs[k],cx,cy,f)
-                if d is None: return 1e9
-                dirs.append(d)
-            e=0.0
-            n=0
-            for i in range(len(dirs)):
-                for j in range(i+1,len(dirs)):
-                    dot=float(np.dot(dirs[i],dirs[j]))
-                    e+=dot*dot; n+=1
-            e/=max(1,n)
-            # Light principal-point regularisation; enough to prevent implausible drift.
-            e+=0.002*((cx-cx0)/max(w,1.0))**2
-            e+=0.002*((cy-cy0)/max(h,1.0))**2
-            return e
-
-        if lock_xz:
-            # Preserve the exact same core solution used before VP3 was confirmed.
-            # With X/Z the principal point stays at image centre and focal length is
-            # obtained from the orthogonal X/Z pair.
-            cx,cy=cx0,cy0
-            qx,qz=obs.get('vp1'),obs.get('vp2')
-            fxz=None
-            if qx is not None and qz is not None and abs(float(qx[2]))>=1e-8 and abs(float(qz[2]))>=1e-8:
-                vx=(float(qx[0]/qx[2]),float(qx[1]/qx[2]))
-                vz=(float(qz[0]/qz[2]),float(qz[1]/qz[2]))
-                f2=-((vx[0]-cx0)*(vz[0]-cx0)+(vx[1]-cy0)*(vz[1]-cy0))
-                if math.isfinite(f2) and f2>25.0:
-                    fxz=math.sqrt(f2)
-            f=max(0.12*w,min(8*w,fxz if fxz is not None else f0))
-        elif len(complete)>=3:
-            best=(objective(cx0,cy0,f0),cx0,cy0,max(0.12*w,min(8*w,f0)))
-            # Coarse search.
-            for ox in (-0.15,-0.075,0.0,0.075,0.15):
-                for oy in (-0.15,-0.075,0.0,0.075,0.15):
-                    for fs in (0.35,0.5,0.7,1.0,1.4,2.0,3.0,5.0):
-                        cx=cx0+ox*w; cy=cy0+oy*h; f=fs*w
-                        val=objective(cx,cy,f)
-                        if val<best[0]:
-                            best=(val,cx,cy,f)
-            _,cx,cy,f=best
-            sx,sy,sf=0.06*w,0.06*h,0.22
-            for _ in range(42):
-                improved=False
-                base=objective(cx,cy,f)
-                candidates=[
-                    (cx+sx,cy,f),(cx-sx,cy,f),
-                    (cx,cy+sy,f),(cx,cy-sy,f),
-                    (cx,cy,f*math.exp(sf)),(cx,cy,f*math.exp(-sf)),
-                ]
-                for tx,ty,tf in candidates:
-                    if not (cx0-0.25*w<=tx<=cx0+0.25*w and cy0-0.25*h<=ty<=cy0+0.25*h and 0.12*w<=tf<=8*w):
-                        continue
-                    val=objective(tx,ty,tf)
-                    if val+1e-12<base:
-                        cx,cy,f=tx,ty,tf; base=val; improved=True
-                if not improved:
-                    sx*=0.62; sy*=0.62; sf*=0.62
-                    if sx<0.05 and sy<0.05 and sf<1e-4:
-                        break
-        else:
-            cx,cy,f=cx0,cy0,max(0.12*w,min(8*w,f0))
-
-        # Back-project observed directions with solved K.
-        raw={k:self._camera_dir_from_h(obs[k],cx,cy,f) for k in complete}
-
-        if lock_xz and 'vp1' in raw and 'vp2' in raw:
-            # Fit ONLY X/Z, exactly as in the stable two-axis state.
-            present=['vp1','vp2']
-            M=np.column_stack([raw[k] for k in present])
-            U,_,Vt=np.linalg.svd(M,full_matrices=False)
-            Q=U@Vt
-            solved_dirs={k:Q[:,i] for i,k in enumerate(present)}
-            x=solved_dirs['vp1']; z=solved_dirs['vp2']
-            y=np.cross(z,x); y/=max(1e-12,float(np.linalg.norm(y)))
-
-            # VP3 observation may choose which end of the same Y axis is labelled positive,
-            # but it cannot rotate X/Z or change focal length.
-            if 'vp3' in raw and float(np.dot(y,raw['vp3'])) < 0.0:
-                y=-y
-            solved_dirs['vp3']=y
-        else:
-            # Generic fallback for non-standard axis-order workflows.
-            world_order=['vp1','vp3','vp2']
-            present=[k for k in world_order if k in raw]
-            M=np.column_stack([raw[k] for k in present])
-            U,_,Vt=np.linalg.svd(M,full_matrices=False)
-            Q=U@Vt
-            solved_dirs={k:Q[:,i] for i,k in enumerate(present)}
-
-            if len(present)==2:
-                if set(present)=={'vp1','vp2'}:
-                    x=solved_dirs['vp1']; z=solved_dirs['vp2']
-                    y=np.cross(z,x); y/=max(1e-12,float(np.linalg.norm(y)))
-                    solved_dirs['vp3']=y
-                elif set(present)=={'vp1','vp3'}:
-                    x=solved_dirs['vp1']; y=solved_dirs['vp3']
-                    z=np.cross(x,y); z/=max(1e-12,float(np.linalg.norm(z)))
-                    solved_dirs['vp2']=z
-                elif set(present)=={'vp2','vp3'}:
-                    z=solved_dirs['vp2']; y=solved_dirs['vp3']
-                    x=np.cross(y,z); x/=max(1e-12,float(np.linalg.norm(x)))
-                    solved_dirs['vp1']=x
-
-        projected={k:self._project_camera_dir(d,cx,cy,f) for k,d in solved_dirs.items()}
-
-        # Push the coherent camera solution into the existing display layer.
-        self.camera_inf_dir={'vp1':None,'vp2':None,'vp3':None}
-        for key,attr in [('vp1','vp1'),('vp2','vp2'),('vp3','vp3')]:
-            q=projected.get(key)
-            if q is None: continue
-            # Treat directions with very small projective w as infinity.
-            scale=max(1.0,math.hypot(float(q[0]),float(q[1])))
-            is_inf=abs(float(q[2])) < 1e-5*scale
-            self.vp_at_infinity[key]=bool(is_inf)
-            if is_inf:
-                dx=float(q[0]); dy=float(q[1]); n=math.hypot(dx,dy)
-                if n>1e-9:
-                    self.camera_inf_dir[key]=(dx/n,dy/n)
-            else:
-                px=float(q[0]/q[2]); py=float(q[1]/q[2])
-                setattr(self,attr,(px/w,py/h))
-
-        self.vp3_at_infinity=self.vp_at_infinity.get('vp3',False)
-
-        # Horizon / eye-level from coherent X and Z when both are finite.
-        if not self.vp_at_infinity.get('vp1',False) and not self.vp_at_infinity.get('vp2',False):
-            x1,y1=self.vp1; x2,y2=self.vp2
-            self.eye_level_y=(y1+(0.5-x1)*(y2-y1)/(x2-x1)) if abs(x2-x1)>1e-12 else (y1+y2)*0.5
-
-        err=self._camera_solution_fit_error_deg(projected)
-        self.camera_solve_error=err
-        self.camera_solution={
-            'cx':cx,'cy':cy,'fpx':f,
-            'hfov':math.degrees(2.0*math.atan(w/(2.0*f))),
-            'vfov':math.degrees(2.0*math.atan(h/(2.0*f))),
-            'eq35':36.0*f/w,
-            'projected':{k:[float(x) for x in q] for k,q in projected.items()},
-            'error_deg':err,
-        }
-
-        if hasattr(self,'camera_solve_label'):
-            errtxt='—' if err is None else f'{err:.2f}°'
-            self.camera_solve_label.setText(
-                f'解決済み  |  Error {errtxt}  |  '
-                f'Lens {self.camera_solution["eq35"]:.0f}mm eq.  |  '
-                f'H-FOV {self.camera_solution["hfov"]:.1f}°'
-            )
-
-        self.update_perspective_labels()
-        self.refresh()
+        w=float(self.original.width); h=float(self.original.height); x1,y1=self.vp1; x2,y2=self.vp2
+        self.eye_level_y=(y1+(0.5-x1)*(y2-y1)/(x2-x1)) if abs(x2-x1)>1e-12 else (y1+y2)*0.5
+        self.camera_solve_error=self._xz_orthogonality_error_deg(fpx)
+        self.camera_solution={'cx':w*0.5,'cy':h*0.5,'fpx':fpx,'hfov':math.degrees(2.0*math.atan(w/(2.0*fpx))),'vfov':math.degrees(2.0*math.atan(h/(2.0*fpx))),'eq35':36.0*fpx/w,'error_deg':self.camera_solve_error}
+        if hasattr(self,'camera_solve_label'): self.camera_solve_label.setText(f'主点：画像中央  |  {self.camera_solution["eq35"]:.1f}mm eq.  |  H-FOV {self.camera_solution["hfov"]:.1f}°')
         return True
+
+    def _xz_orthogonality_error_deg(self,fpx):
+        if self.original is None or fpx is None or np is None:return None
+        w=float(self.original.width); h=float(self.original.height); cx=w*0.5; cy=h*0.5
+        def d(v):
+            a=np.array([(v[0]*w-cx)/fpx,(v[1]*h-cy)/fpx,1.0],dtype=float); n=float(np.linalg.norm(a)); return a/n if n>1e-12 else None
+        dx=d(self.vp1); dz=d(self.vp2)
+        if dx is None or dz is None:return None
+        dot=max(-1.0,min(1.0,abs(float(np.dot(dx,dz))))); return abs(90.0-math.degrees(math.acos(dot)))
+
+    def solve_camera_calibration(self):
+        ok=self.recompute_lens_from_current_vps(); self.update_perspective_labels(); self.refresh(); return ok
 
     def solve_perspective_axis(self,name):
-        """Update the current manual axis observation, then solve one shared camera."""
         q=self._axis_observation_h(name)
-        if q is None or self.original is None:
-            return False
-        w=float(self.original.width); h=float(self.original.height)
-
-        # Raw per-axis preview before the shared camera solution is available.
-        scale=max(1.0,math.hypot(float(q[0]),float(q[1])))
-        is_inf=abs(float(q[2])) < 1e-5*scale
-        self.vp_at_infinity[name]=bool(is_inf)
+        if q is None or self.original is None:return False
+        w=float(self.original.width); h=float(self.original.height); scale=max(1.0,math.hypot(float(q[0]),float(q[1]))); is_inf=abs(float(q[2])) < 1e-5*scale; self.vp_at_infinity[name]=bool(is_inf); self.camera_inf_dir[name]=None
         if is_inf:
-            n=math.hypot(float(q[0]),float(q[1]))
-            if n>1e-9:
-                self.camera_inf_dir[name]=(float(q[0])/n,float(q[1])/n)
+            n=math.hypot(float(q[0]),float(q[1]));
+            if n>1e-9:self.camera_inf_dir[name]=(float(q[0])/n,float(q[1])/n)
         else:
-            px=float(q[0]/q[2]); py=float(q[1]/q[2])
-            if name=='vp1': self.vp1=(px/w,py/h)
-            elif name=='vp2': self.vp2=(px/w,py/h)
-            else: self.vp3=(px/w,py/h)
-
-        self.vp3_at_infinity=self.vp_at_infinity.get('vp3',False)
-
-        # Shared camera solve becomes available from two completed axes onward.
-        if sum(1 for k in ('vp1','vp2','vp3') if self._persp_axis_complete.get(k,False))>=2:
-            self.solve_camera_calibration()
-        else:
-            self.update_perspective_labels()
-            if hasattr(self,'canvas'): self.canvas.update()
+            px=float(q[0]/q[2]); py=float(q[1]/q[2]); v=(px/w,py/h)
+            if name=='vp1': self.vp1=v
+            elif name=='vp2': self.vp2=v
+            else: self.vp3=v
+        self.vp3_at_infinity=self.vp_at_infinity.get('vp3',False); self.recompute_lens_from_current_vps(); self.update_perspective_labels();
+        if hasattr(self,'canvas'): self.canvas.update()
         return True
+
+    def align_calibration_lines_to_vp(self,name):
+        """Rotate the two visible calibration strokes so they pass through a dragged VP.
+
+        Segment midpoints and lengths are preserved. This mirrors the feel of a
+        VanishPoint-style editor: moving the VP updates the ruler geometry instead of
+        leaving the old strokes pointing somewhere else.
+        """
+        if self.original is None or self.vp_at_infinity.get(name,False):return
+        vp=self.vp1 if name=='vp1' else (self.vp2 if name=='vp2' else self.vp3)
+        w=max(1.0,float(self.original.width)); h=max(1.0,float(self.original.height))
+        out=[]
+        for seg in self.perspective_lines.get(name,[])[:2]:
+            (x1,y1),(x2,y2)=seg
+            p1=(x1*w,y1*h); p2=(x2*w,y2*h); mx=(p1[0]+p2[0])*0.5; my=(p1[1]+p2[1])*0.5
+            ln=math.hypot(p2[0]-p1[0],p2[1]-p1[1])
+            dx=vp[0]*w-mx; dy=vp[1]*h-my; dn=math.hypot(dx,dy)
+            if ln<1e-6 or dn<1e-6:
+                out.append([tuple(seg[0]),tuple(seg[1])]); continue
+            ux,uy=dx/dn,dy/dn; half=ln*0.5
+            a=((mx-ux*half)/w,(my-uy*half)/h); b=((mx+ux*half)/w,(my+uy*half)/h)
+            out.append([a,b])
+        if len(out)==2:
+            self.perspective_lines[name]=out
+            self._persp_line1_locked[name]=copy.deepcopy(out[0])
+            self._persp_anchor_touched[(name,0)]={0,1}; self._persp_anchor_touched[(name,1)]={0,1}
 
     def solve_all_perspective_axes(self):
         for n in ('vp1','vp2','vp3'): self.solve_perspective_axis(n)
@@ -2275,47 +2063,26 @@ class MovieShotAnalyzer(QMainWindow):
     def update_perspective_labels(self):
         inf=getattr(self,'vp_at_infinity',{'vp1':False,'vp2':False,'vp3':False})
         def vtxt(key,xy,label):
-            if inf.get(key,False):
-                return f'{label}: ∞'
-            return f'{label}: ({xy[0]:.2f}, {xy[1]:.2f})'
-        txt=(vtxt('vp1',self.vp1,'X軸（水平・左右方向）')+'  /  '+
-             vtxt('vp2',self.vp2,'Z軸（奥行き方向）')+'\n'+
-             vtxt('vp3',self.vp3,'Y軸（垂直・上下方向）'))
-        if getattr(self,'camera_solution',None):
-            err=self.camera_solution.get('error_deg')
-            if err is not None:
-                txt+=f'\nSolve error: {err:.2f}°'
-        if hasattr(self,'persp_label'):
-            self.persp_label.setText(txt)
-        if hasattr(self,'analysis_perspective'):
-            self.analysis_perspective.setText(txt)
+            if not self._persp_axis_complete.get(key,False):return f'{label}: —'
+            if inf.get(key,False):return f'{label}: ∞'
+            return f'{label}: ({xy[0]:.3f}, {xy[1]:.3f})'
+        txt=vtxt('vp1',self.vp1,'X / VP1')+'\n'+vtxt('vp2',self.vp2,'Z / VP2')+'\n'+vtxt('vp3',self.vp3,'Y / VP3')
+        if hasattr(self,'persp_label'):self.persp_label.setText(txt)
+        if hasattr(self,'analysis_perspective'):self.analysis_perspective.setText(txt)
+        if hasattr(self,'persp_status_label'):
+            marks=[]
+            for k,l in [('vp1','X'),('vp2','Z'),('vp3','Y')]: marks.append(f'{l} '+('∞' if inf.get(k,False) and self._persp_axis_complete.get(k,False) else ('✓' if self._persp_axis_complete.get(k,False) else '—')))
+            extra=''
+            if getattr(self,'camera_solution',None):extra=f'   |   {self.camera_solution["eq35"]:.1f}mm / {self.camera_solution["hfov"]:.1f}°'
+            self.persp_status_label.setText('   '.join(marks)+extra)
         self.update_lens_estimate()
 
     def _manual_axis_vp_normalized(self, name):
-        """Return the raw VP from the user's two manual calibration lines.
-
-        This bypasses the orthonormalized camera solution, so lens estimation can be
-        evaluated independently from the grid solver.
-        """
-        if self.original is None:
-            return None
-        # Z uses the same robust observation as the camera solver when refinement
-        # lines are present, so lens estimation and perspective do not disagree.
-        if name=='vp2':
-            q=self._axis_observation_h(name)
-            if q is None or abs(float(q[2]))<1e-9:
-                return None
-            w=float(self.original.width); h=float(self.original.height)
-            x=float(q[0]/q[2])/w; y=float(q[1]/q[2])/h
-            if not (math.isfinite(x) and math.isfinite(y)):return None
-            return (x,y)
-        lines=self.perspective_lines.get(name,[])
-        if len(lines)<2:return None
-        ip=infinite_line_intersection(lines[0][0],lines[0][1],lines[1][0],lines[1][1])
-        if ip is None:return None
-        x,y=float(ip[0]),float(ip[1])
-        if not (math.isfinite(x) and math.isfinite(y)):return None
-        return (x,y)
+        if self.original is None or not self._persp_axis_complete.get(name,False):return None
+        if self.vp_at_infinity.get(name,False):return None
+        v=self.vp1 if name=='vp1' else (self.vp2 if name=='vp2' else self.vp3)
+        if not (math.isfinite(v[0]) and math.isfinite(v[1])):return None
+        return (float(v[0]),float(v[1]))
 
     def _lens_from_manual_xz(self):
         """Primary lens estimate from raw manual X/Z vanishing points."""
@@ -2340,70 +2107,33 @@ class MovieShotAnalyzer(QMainWindow):
         }
 
     def _lens_sensitivity_range(self, samples=96):
-        """Monte-Carlo sensitivity of lens estimate to small manual-line placement error.
+        """Sensitivity of the current X/Z VP solution to a few pixels of VP movement.
 
-        The current perspective/grid solution is NOT modified. We perturb only copies of
-        the four X/Z endpoints by a few image pixels and recompute the raw XZ lens.
+        v1.4 uses the current draggable VP markers as authoritative. This avoids
+        reporting a confidence range based on old calibration strokes after the artist
+        has manually fine-tuned a vanishing point.
         """
-        if self.original is None:
-            return None
-        if not (self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2')):
-            return None
-
+        if self.original is None:return None
+        a=self._manual_axis_vp_normalized('vp1'); b=self._manual_axis_vp_normalized('vp2')
+        if a is None or b is None:return None
         w=float(self.original.width); h=float(self.original.height)
-        if w < 2 or h < 2:
-            return None
-
-        base_x=self.perspective_lines.get('vp1',[])
-        base_z=self.perspective_lines.get('vp2',[])
-        if len(base_x)<2 or len(base_z)<2:
-            return None
-
-        # ~4 px 1-sigma, capped relative to image size. This represents careful manual placement.
-        sx=min(4.0/max(w,1.0),0.004)
-        sy=min(4.0/max(h,1.0),0.004)
-        vals=[]
-        rng=random.Random(137)
-
-        def perturbed_vp(lines):
-            pls=[]
-            for ln in lines[:2]:
-                p1=(ln[0][0]+rng.gauss(0,sx), ln[0][1]+rng.gauss(0,sy))
-                p2=(ln[1][0]+rng.gauss(0,sx), ln[1][1]+rng.gauss(0,sy))
-                pls.append((p1,p2))
-            return infinite_line_intersection(pls[0][0],pls[0][1],pls[1][0],pls[1][1])
-
+        if w<2 or h<2:return None
+        sx=min(4.0/max(w,1.0),0.004); sy=min(4.0/max(h,1.0),0.004)
+        vals=[]; rng=random.Random(137)
         for _ in range(max(24,int(samples))):
-            vx=perturbed_vp(base_x)
-            vz=perturbed_vp(base_z)
-            if vx is None or vz is None:
-                continue
-            try:
-                fpx=self._pair_focal_pixels(vx,vz)
-            except Exception:
-                fpx=None
-            if fpx is None or not math.isfinite(fpx):
-                continue
+            va=(a[0]+rng.gauss(0,sx),a[1]+rng.gauss(0,sy))
+            vb=(b[0]+rng.gauss(0,sx),b[1]+rng.gauss(0,sy))
+            fpx=self._pair_focal_pixels(va,vb)
+            if fpx is None or not math.isfinite(fpx):continue
             eq35=36.0*fpx/w
-            if 4.0 <= eq35 <= 400.0:
-                vals.append(eq35)
-
-        if len(vals)<12:
-            return None
+            if 4.0<=eq35<=400.0:vals.append(eq35)
+        if len(vals)<12:return None
         vals=sorted(vals)
         def q(frac):
-            pos=(len(vals)-1)*frac
-            lo=int(math.floor(pos)); hi=int(math.ceil(pos))
+            pos=(len(vals)-1)*frac; lo=int(math.floor(pos)); hi=int(math.ceil(pos))
             if lo==hi:return vals[lo]
-            t=pos-lo
-            return vals[lo]*(1-t)+vals[hi]*t
-        return {
-            'p10':q(0.10),
-            'p50':q(0.50),
-            'p90':q(0.90),
-            'spread':q(0.90)-q(0.10),
-            'n':len(vals),
-        }
+            t=pos-lo; return vals[lo]*(1-t)+vals[hi]*t
+        return {'p10':q(0.10),'p50':q(0.50),'p90':q(0.90),'spread':q(0.90)-q(0.10),'n':len(vals)}
 
     def _pair_focal_pixels(self, a, b):
         """Focal length in pixels from an orthogonal VP pair with principal point at image center."""
@@ -2418,32 +2148,14 @@ class MovieShotAnalyzer(QMainWindow):
         return math.sqrt(f2)
 
     def _legacy_lens_estimate(self):
-        """Comparison with the older VP1/VP2 + VP3 validation weighting."""
-        if self.original is None:return None
-        vx=self._manual_axis_vp_normalized('vp1'); vz=self._manual_axis_vp_normalized('vp2')
-        if vx is None or vz is None:return None
-        base=self._pair_focal_pixels(vx,vz)
-        if base is None:return None
-        vals=[]
-        if self._persp_axis_complete.get('vp3'):
-            vy=self._manual_axis_vp_normalized('vp3')
-            if vy is not None:
-                for a in (vx,vz):
-                    q=self._pair_focal_pixels(a,vy)
-                    if q is not None and math.isfinite(q):vals.append(q)
-        accepted=[v for v in vals if abs(v-base)/max(base,1e-6)<=0.38]
-        fpx=base
-        if accepted:
-            vmed=sorted(accepted)[len(accepted)//2]
-            fpx=0.72*base+0.28*vmed
-        return 36.0*fpx/max(float(self.original.width),1.0)
+        q=self._lens_from_manual_xz(); return None if q is None else float(q['eq35'])
 
     def estimate_lens(self):
         """Lens estimate decoupled from Camera Solver.
 
-        Primary = raw manual X/Z VP pair.
-        Camera Solver focal length = secondary diagnostic only.
-        Y/VP3 never pulls the primary lens value.
+        Primary = current X/Z VP markers.
+        Principal point = image centre.
+        Y/VP3 is independent and never changes focal length.
         """
         if self.original is None:
             return None
@@ -2497,9 +2209,9 @@ class MovieShotAnalyzer(QMainWindow):
         candidates=sorted(common,key=lambda mm:abs(math.log(max(mm,1)/max(eq35,1))))[:3]
         candidates=sorted(candidates)
 
-        reason='手動X/Z消失点を主推定'
+        reason='現在のX/Z消失点 + 主点=画像中央'
         if camera_eq is not None:
-            reason+=f' / Camera Solve比較 {camera_eq:.1f}mm'
+            reason+=f' / XZ solver {camera_eq:.1f}mm'
             if camera_delta is not None and camera_delta>0.25:
                 reason+='（差が大きいため要注意）'
 
@@ -2529,19 +2241,16 @@ class MovieShotAnalyzer(QMainWindow):
             return
         if not (self._persp_axis_complete.get('vp1') and self._persp_axis_complete.get('vp2')):
             for t in targets: t.setText('VP1 と VP2 を確定すると推定を開始します。')
-            for d in detail_targets: d.setText('2点透視を主推定、VP3は検証として使用します。')
+            for d in detail_targets: d.setText('X/Zの2消失点から推定。Y/VP3は作画用でレンズ計算には使用しません。')
             return
         est=self.estimate_lens()
         if est is None:
-            for t in targets: t.setText('レンズ推定不可\nVP1/VP2 が直交方向として成立していない可能性があります。基準線を見直してください。')
+            for t in targets: t.setText('レンズ推定不可\nX/Zの現在VPでは、主点=画像中央の直交2VPモデルが成立しません。VPを微調整してください。')
             return
         cand=' / '.join(f'{x}mm' for x in est['candidates'])
         lens_text=(
-            f"推定焦点距離： 約 {est['eq35']:.0f} mm（35mm換算）\n"
-            f"推定レンジ： {est['lo']:.0f}–{est['hi']:.0f} mm\n"
-            f"候補： {cand}\n"
-            f"水平画角： 約 {est['hfov']:.1f}°  /  垂直画角： 約 {est['vfov']:.1f}°\n"
-            f"レンズ傾向： {est['kind']}  /  レンズ推定信頼度： {est['confidence']}"
+            f"{est['eq35']:.1f}mm eq.   H-FOV {est['hfov']:.1f}°\n"
+            f"推定範囲 {est['lo']:.0f}–{est['hi']:.0f}mm   {est['kind']}   信頼度：{est['confidence']}"
         )
         for t in targets: t.setText(lens_text)
         details=[]
@@ -2549,15 +2258,15 @@ class MovieShotAnalyzer(QMainWindow):
             if val is not None:
                 details.append(f"{label}: {36.0*val/max(float(self.original.width),1.0):.1f}mm相当")
         if est.get('legacy_eq35') is not None:
-            details.append(f"旧方式比較: {est['legacy_eq35']:.1f}mm相当")
+            details.append(f"XZ再計算: {est['legacy_eq35']:.1f}mm相当")
         if est.get('camera_eq35') is not None:
-            details.append(f"Camera Solver側: {est['camera_eq35']:.1f}mm相当")
+            details.append(f"現在VP解: {est['camera_eq35']:.1f}mm相当")
         sens=est.get('sensitivity')
         if sens is not None:
             details.append(f"入力感度: {sens['p10']:.1f}–{sens['p90']:.1f}mm（10–90%）")
         details.append(f"判定理由: {est['reason']}")
         detail_text=' / '.join(details)
-        detail_text += '\n※ Solve errorはパース整合度、レンズ推定信頼度とは別です。'
+        detail_text += '\n※ Y/VP3を動かしてもレンズ値は変化しません。'
         for d in detail_targets: d.setText(detail_text)
 
     def comp_edit_toggled(self,on):
