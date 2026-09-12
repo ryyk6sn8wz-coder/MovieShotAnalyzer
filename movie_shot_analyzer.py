@@ -1136,7 +1136,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — v2.0 Compact Refinement'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — v2.0.2 UI/Thumbnail Hotfix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         # Pure Manual Perspective: no automatic-analysis data and no learning data
@@ -1182,7 +1182,16 @@ class MovieShotAnalyzer(QMainWindow):
         self.batch_export_cancelled=False
         self.batch_export_executor=ThreadPoolExecutor(max_workers=max(2,min(8,(os.cpu_count() or 4))))
         self.auto_frame_on_load=True
-        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('v2.0 — Compact UI + Multi-Axis Lens Refinement')
+        # Bottom thumbnail view is built lazily in small batches and cached.
+        # Rebuilding every thumbnail on each shot change caused severe UI stalls.
+        self.thumb_buttons=[]
+        self._thumb_build_token=0
+        self._thumb_build_index=0
+        # Thumbnail filmstrip is virtual/lazy: buttons are cheap placeholders and only
+        # thumbnails currently visible in the horizontal viewport are decoded.
+        self._thumb_icon_cache={}
+        self._thumb_visible_timer=None
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('v2.0.4 — lightweight clickable thumbnail navigation')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
@@ -1195,7 +1204,7 @@ class MovieShotAnalyzer(QMainWindow):
         root_v.addWidget(main_row,1)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(6,6,6,6); c.setSpacing(2)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('Perspective Tool + Lens Solver v2.0'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('Perspective Tool + Lens Solver v2.0.2'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1237,7 +1246,7 @@ class MovieShotAnalyzer(QMainWindow):
         return b
 
     def _build_right_tabs(self,outer):
-        panel=QWidget(); panel.setObjectName('rightPanel'); panel.setMinimumWidth(350); panel.setMaximumWidth(430); self.right_panel=panel
+        panel=QWidget(); panel.setObjectName('rightPanel'); panel.setMinimumWidth(360); panel.setMaximumWidth(410); self.right_panel=panel
         r=QVBoxLayout(panel); r.setContentsMargins(8,8,8,8); r.setSpacing(6)
         self.right_tabs=QTabWidget(); self.right_tabs.setObjectName('rightTabs'); r.addWidget(self.right_tabs)
         self._build_perspective_tab(); self._build_composition_tab()
@@ -1263,9 +1272,9 @@ class MovieShotAnalyzer(QMainWindow):
         refine_row=QHBoxLayout(); refine_row.setSpacing(4)
         for key,label,desc in [('vp1','X','水平'),('vp2','Z','奥行'),('vp3','Y','垂直')]:
             box=QHBoxLayout(); box.setSpacing(2)
-            lab=QLabel(f'{label}補助0'); lab.setObjectName('note'); lab.setMinimumWidth(52); lab.setToolTip(f'{label}軸（{desc}）の補助線本数。軸確定後は画像上をそのままドラッグして補助線を追加できます。'); box.addWidget(lab); self.axis_refine_labels[key]=lab
-            add=QPushButton('+'); add.setFixedWidth(28); add.setToolTip(f'{label}軸（{desc}）の補助線入力を開始。軸確定後はボタンを押さず直接描いても追加されます。最大6本。'); add.clicked.connect(lambda checked=False,k=key:self.arm_axis_refinement_line(k)); box.addWidget(add); self.axis_refine_buttons[key]=add
-            clear=QPushButton('×'); clear.setFixedWidth(28); clear.setToolTip(f'{label}補助線を全削除'); clear.clicked.connect(lambda checked=False,k=key:self.clear_axis_refinement_lines(k)); box.addWidget(clear); self.axis_refine_clear_buttons[key]=clear
+            lab=QLabel(f'{label}補0'); lab.setObjectName('note'); lab.setMinimumWidth(0); lab.setMaximumWidth(36); lab.setToolTip(f'{label}軸（{desc}）の補助線本数。軸確定後は画像上をそのままドラッグして補助線を追加できます。'); box.addWidget(lab); self.axis_refine_labels[key]=lab
+            add=QPushButton('+'); add.setFixedWidth(24); add.setToolTip(f'{label}軸（{desc}）の補助線入力を開始。軸確定後はボタンを押さず直接描いても追加されます。最大6本。'); add.clicked.connect(lambda checked=False,k=key:self.arm_axis_refinement_line(k)); box.addWidget(add); self.axis_refine_buttons[key]=add
+            clear=QPushButton('×'); clear.setFixedWidth(24); clear.setToolTip(f'{label}補助線を全削除'); clear.clicked.connect(lambda checked=False,k=key:self.clear_axis_refinement_lines(k)); box.addWidget(clear); self.axis_refine_clear_buttons[key]=clear
             refine_row.addLayout(box,1)
         lay.addLayout(refine_row)
         self.section(lay,'グリッド / 放射線')
@@ -1330,25 +1339,127 @@ class MovieShotAnalyzer(QMainWindow):
         self.thumb_body=QWidget(); self.thumb_layout=QHBoxLayout(self.thumb_body); self.thumb_layout.setContentsMargins(2,2,2,2); self.thumb_layout.setSpacing(6); self.thumb_layout.addStretch(1); self.thumb_scroll.setWidget(self.thumb_body); bl.addWidget(self.thumb_scroll)
         root_v.addWidget(self.bottom_view,0)
 
-    def _refresh_bottom_view(self):
+    def _clear_bottom_view(self):
         if not hasattr(self,'thumb_layout'): return
+        self._thumb_build_token += 1
+        self.thumb_buttons=[]
+        self._thumb_icon_cache={}
         while self.thumb_layout.count():
             item=self.thumb_layout.takeAt(0); w=item.widget()
             if w is not None: w.deleteLater()
+
+    def _refresh_bottom_view(self):
+        """Create a lightweight clickable filmstrip without decoding every image.
+
+        All shot buttons are created immediately as cheap placeholders. Only thumbnails
+        that are currently visible (plus a small margin) are decoded and cached. This
+        keeps folders with hundreds of shots responsive.
+        """
+        if not hasattr(self,'thumb_layout'): return
+        self._clear_bottom_view()
+        if hasattr(self,'bottom_count'): self.bottom_count.setText(f'{len(self.paths)}枚')
+        token=self._thumb_build_token
+
+        # Creating buttons is cheap; image decoding is deferred until the button is visible.
         for i,p in enumerate(self.paths):
-            b=QPushButton(); b.setCheckable(True); b.setChecked(i==self.current_index); b.setFixedSize(104,64); b.setToolTip(f'{i+1}: {p.name}')
+            b=QPushButton(str(i+1))
+            b.setCheckable(True); b.setChecked(i==self.current_index)
+            b.setFixedSize(104,64); b.setToolTip(f'{i+1}: {p.name}')
+            b.setProperty('shotIndex', i)
+            b.clicked.connect(self._on_thumbnail_clicked)
+            self.thumb_layout.addWidget(b)
+            self.thumb_buttons.append(b)
+        self.thumb_layout.addStretch(1)
+
+        # Populate only the visible thumbnails. Scrolling schedules another small batch.
+        bar=self.thumb_scroll.horizontalScrollBar()
+        try:
+            bar.valueChanged.disconnect(self._schedule_visible_thumbnails)
+        except Exception:
+            pass
+        bar.valueChanged.connect(self._schedule_visible_thumbnails)
+        QTimer.singleShot(0, self._update_bottom_selection)
+        QTimer.singleShot(0, self._schedule_visible_thumbnails)
+
+    def _schedule_visible_thumbnails(self, *args):
+        if not hasattr(self,'thumb_scroll') or not self.thumb_buttons: return
+        # Coalesce rapid scroll events so dragging the scrollbar never decodes hundreds.
+        token=self._thumb_build_token
+        QTimer.singleShot(35, lambda t=token: self._populate_visible_thumbnails(t))
+
+    def _populate_visible_thumbnails(self, token=None):
+        if token is not None and token != self._thumb_build_token: return
+        if not self.thumb_buttons or not self.paths: return
+        try:
+            bar=self.thumb_scroll.horizontalScrollBar()
+            x=max(0,bar.value())
+            vw=max(1,self.thumb_scroll.viewport().width())
+        except Exception:
+            x=0; vw=900
+        cell=110  # 104px button + 6px spacing
+        first=max(0, x//cell - 2)
+        last=min(len(self.thumb_buttons), (x+vw)//cell + 4)
+        # Decode at most the currently visible neighborhood. Icons remain cached.
+        for i in range(first,last):
+            if i in self._thumb_icon_cache:
+                continue
+            p=self.paths[i]
+            pm=None
             try:
                 with Image.open(p) as im:
-                    pm=pil_to_pixmap(im.convert('RGB')); pm=pm.scaled(96,56,Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation); b.setIcon(pm); b.setIconSize(pm.size())
+                    try:
+                        im.draft('RGB',(192,112))
+                    except Exception:
+                        pass
+                    thumb=im.convert('RGB')
+                    thumb.thumbnail((96,56), Image.Resampling.BILINEAR)
+                    pm=pil_to_pixmap(thumb)
             except Exception:
-                b.setText(str(i+1))
-            b.clicked.connect(lambda checked=False,n=i:self._jump_to_image(n)); self.thumb_layout.addWidget(b)
-        self.thumb_layout.addStretch(1)
-        if hasattr(self,'bottom_count'): self.bottom_count.setText(f'{len(self.paths)}枚')
+                pm=None
+            self._thumb_icon_cache[i]=pm
+            if i < len(self.thumb_buttons):
+                b=self.thumb_buttons[i]
+                if pm is not None:
+                    b.setText(''); b.setIcon(pm); b.setIconSize(pm.size())
+                else:
+                    b.setText(str(i+1))
+
+    def _update_bottom_selection(self):
+        if not hasattr(self,'thumb_buttons'): return
+        current_button=None
+        for b in self.thumb_buttons:
+            idx=b.property('shotIndex')
+            is_current=(idx == self.current_index)
+            b.blockSignals(True); b.setChecked(is_current); b.blockSignals(False)
+            if is_current: current_button=b
+        # Keep selected shot visible, then decode only its new visible neighborhood.
+        if current_button is not None and hasattr(self,'thumb_scroll'):
+            QTimer.singleShot(0, lambda w=current_button: self.thumb_scroll.ensureWidgetVisible(w, 24, 0))
+            QTimer.singleShot(15, self._schedule_visible_thumbnails)
+
+    def _on_thumbnail_clicked(self, checked=False):
+        b=self.sender()
+        if b is None: return
+        idx=b.property('shotIndex')
+        try:
+            idx=int(idx)
+        except (TypeError, ValueError):
+            return
+        self._jump_to_image(idx)
 
     def _jump_to_image(self,index):
-        if 0 <= index < len(self.paths) and index != self.current_index:
-            self._save_current_frame(); self.save_current_perspective(); self.current_index=index; self.load_current()
+        if not (0 <= index < len(self.paths)):
+            return
+        if index == self.current_index:
+            self._update_bottom_selection()
+            return
+        # Preserve only the current shot, then load only the clicked shot.
+        # No other source image or thumbnail is reopened here.
+        self._save_current_frame()
+        self.save_current_perspective()
+        self.current_index=index
+        self.load_current()
+        self._update_bottom_selection()
 
     def set_vp_ray_visible(self,key,value):
         self.vp_ray_visible[key]=bool(value); self.refresh()
@@ -1416,7 +1527,7 @@ class MovieShotAnalyzer(QMainWindow):
         for key,lab in self.axis_refine_labels.items():
             n=len(getattr(self,'perspective_extra_lines',{}).get(key,[]))
             waiting = getattr(self,'axis_refine_mode',None)==key
-            lab.setText(f'{names[key]}補助{n}' + ('●' if waiting else ''))
+            lab.setText(f'{names[key]}補{n}' + ('●' if waiting else ''))
 
     def update_z_refine_label(self):
         # Backward-compatible alias used by older call sites.
@@ -1694,7 +1805,7 @@ class MovieShotAnalyzer(QMainWindow):
             self.update_perspective_panel_state(); self.update_perspective_labels()
             self.update_display(); self.file_label.setText(f'{p.name}\n{self.current_index+1} / {len(self.paths)}\n{self.original.width} × {self.original.height} px'); self.statusBar().showMessage(str(p))
         except Exception as ex:self.file_label.setText(f'読み込み失敗: {p.name}\n{ex}')
-        self._update_nav(); self._refresh_bottom_view()
+        self._update_nav(); self._update_bottom_selection()
     def _display_adjusted_image(self):
         if self.original is None:return None
         im=self.original.copy(); im=ImageEnhance.Brightness(im).enhance(self.sliders['brightness'].value()/100); im=ImageEnhance.Contrast(im).enhance(self.sliders['contrast'].value()/100); im=ImageEnhance.Color(im).enhance(self.sliders['saturation'].value()/100)

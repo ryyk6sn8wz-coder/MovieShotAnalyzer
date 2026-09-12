@@ -27,3 +27,26 @@ GitHub Actions の `Build Windows EXE` を実行してください。Artifact内
 - 構図ガイドを3列配置にして縦方向を圧縮し、タブ内の縦スクロールを廃止。
 - 左パネルの余白と説明文を整理し、縦スクロールなしで収まりやすく調整。
 - 画面下にショット一覧サムネイルビューを追加。クリックで画像移動可能。
+
+## v2.0.2 UI / Thumbnail Hotfix
+- Fixed helper-count row clipping by shortening X/Z/Y helper labels and controls.
+- Fixed severe slowdown introduced by the bottom shot view.
+  - Thumbnails are no longer rebuilt/re-opened for every shot change.
+  - Thumbnail creation is lazy and batched so the UI stays responsive.
+  - Current-shot selection only updates button state.
+- Perspective / lens calculation code is unchanged from v2.0.1.
+
+## v2.0.3 — Thumbnail navigation
+- Bottom filmstrip thumbnails are directly clickable.
+- Clicking a thumbnail jumps to that exact image while preserving the current shot's frame/perspective state.
+- The active thumbnail remains checked/highlighted and is automatically scrolled into view.
+- Uses an explicit `shotIndex` property instead of lambda index capture for more robust navigation.
+
+## v2.0.4 lightweight clickable thumbnail navigation
+- Clicking a filmstrip thumbnail jumps directly to that image.
+- Only the clicked source image is loaded into the Analyzer.
+- The filmstrip no longer decodes all images in large folders.
+- Thumbnail buttons are lightweight placeholders; only currently visible thumbnails are decoded.
+- Visible thumbnail icons are cached and reused.
+- Rapid horizontal scrolling is coalesced to avoid UI stalls.
+- Existing per-shot frame/perspective state is saved/restored without rebuilding the filmstrip.
