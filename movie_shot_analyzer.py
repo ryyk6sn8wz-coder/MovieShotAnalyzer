@@ -702,7 +702,16 @@ class ImageCanvas(QWidget):
                     ext=10000.0/ln; cc=QColor(color); base_alpha=self.owner.perspective_alpha.value()/100; cc.setAlpha(round(255*base_alpha*(0.55 if active else 0.25))); xp=QPen(cc)
                     xp.setWidthF(max(0.75,basew*1.5) if (active and not complete) else max(0.5,basew*0.75)); xp.setStyle(Qt.PenStyle.DashLine); p.setPen(xp)
                     p.drawLine(QPointF(a.x()-dx*ext,a.y()-dy*ext),QPointF(a.x()+dx*ext,a.y()+dy*ext))
-                if (not getattr(self.owner,'export_render_mode',False)) and active and self.owner.show_perspective_handles.isChecked():
+                # Keep endpoint handles for BOTH calibration lines while this axis is selected.
+                # This is intentionally VanishPoint-like: after line 2 appears (and after VP solve),
+                # line 1 never becomes 'dead'. The user can keep tuning all four white points.
+                handles_visible = (
+                    not getattr(self.owner,'export_render_mode',False)
+                    and key == self.owner.active_perspective_axis
+                    and self.owner.show_perspective_handles.isChecked()
+                    and (complete or touched or drawing_this)
+                )
+                if handles_visible:
                     outline=QPen(QColor(color)); outline.setWidthF(2.0); p.setPen(outline); p.setBrush(QColor('#ffffff'))
                     for ptxy in line:
                         hp=self._image_norm_to_point(*ptxy); p.drawEllipse(QRectF(hp.x()-5,hp.y()-5,10,10))
@@ -743,12 +752,18 @@ class ImageCanvas(QWidget):
             if math.hypot(pos.x()-pt.x(),pos.y()-pt.y()) < 14:
                 return ('perspective_vp',name)
         if self.owner.show_perspective_handles.isChecked():
-            name=self.owner.active_perspective_axis; li=self.owner.perspective_step
-            if li==1 and not self.owner._persp_anchor_touched.get((name,1),set()): return None
-            line=self.owner.perspective_lines[name][li]
-            for ei,xy in enumerate(line):
-                pt=self._image_norm_to_point(*xy)
-                if math.hypot(pos.x()-pt.x(),pos.y()-pt.y())<15:return ('perspective_anchor',name,li,ei)
+            name=self.owner.active_perspective_axis
+            complete=self.owner._persp_axis_complete.get(name,False)
+            # Hit-test every visible endpoint on the selected axis, not only the current
+            # pencil step. Once line 2 exists, line 1 remains fully editable.
+            for li,line in enumerate(self.owner.perspective_lines[name][:2]):
+                touched=bool(self.owner._persp_anchor_touched.get((name,li),set()))
+                if not complete and not touched:
+                    continue
+                for ei,xy in enumerate(line):
+                    pt=self._image_norm_to_point(*xy)
+                    if math.hypot(pos.x()-pt.x(),pos.y()-pt.y())<15:
+                        return ('perspective_anchor',name,li,ei)
         return None
 
     def wheelEvent(self,e):
@@ -964,7 +979,13 @@ class ImageCanvas(QWidget):
             lines=[[tuple(pt) for pt in line] for line in self.owner.perspective_lines[name]]
             lines[li][ei]=(nx,ny)
             self.owner.perspective_lines[name]=lines
-            if li==1:
+            # Line 1 and line 2 are equally editable once both exist. Re-solve the VP
+            # live while either line is adjusted. Keep the safety copy in sync so a
+            # later line-2 redraw can never resurrect an older version of line 1.
+            if li==0:
+                self.owner._persp_line1_locked[name]=[tuple(lines[0][0]),tuple(lines[0][1])]
+            other_ready=bool(self.owner._persp_anchor_touched.get((name,1-li),set()))
+            if self.owner._persp_axis_complete.get(name,False) or other_ready:
                 self.owner.solve_perspective_axis(name)
         elif typ=='comp_handle':
             name,i=self.drag_item[1],self.drag_item[2]; d=self.owner.comp_guides[name]; nx,ny=self._pos_to_norm(pos,fr)
@@ -1094,11 +1115,21 @@ class ImageCanvas(QWidget):
                 key=(name,li)
                 touched=self.owner._persp_anchor_touched.setdefault(key,set())
                 touched.add(ei)
-                if li==0 and touched=={0,1}:
-                    self.owner.begin_second_perspective_line(name)
-                    self.owner.perspective_step=1
-                    self.owner._persp_anchor_touched[(name,1)]=set()
-                    self.owner.update_perspective_panel_state()
+                if li==0:
+                    # Always retain the edited first line as the authoritative copy.
+                    line0=self.owner.perspective_lines[name][0]
+                    self.owner._persp_line1_locked[name]=[tuple(line0[0]),tuple(line0[1])]
+                    # Only arm a fresh line 2 the very first time line 1 is completed.
+                    # If line 2 already exists, editing line 1 must NEVER erase/reset it.
+                    line2_ready=bool(self.owner._persp_anchor_touched.get((name,1),set()))
+                    if touched=={0,1} and not line2_ready and not self.owner._persp_axis_complete.get(name,False):
+                        self.owner.begin_second_perspective_line(name)
+                        self.owner.perspective_step=1
+                        self.owner._persp_anchor_touched[(name,1)]=set()
+                        self.owner.update_perspective_panel_state()
+                    elif line2_ready or self.owner._persp_axis_complete.get(name,False):
+                        self.owner.solve_perspective_axis(name)
+                        self.owner.update_perspective_panel_state()
                 elif li==1:
                     self.owner.solve_perspective_axis(name)
                     if len(touched) >= 2:
@@ -1112,7 +1143,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — v1.4 Perspective + Lens'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — v1.5 Editable VP Guides'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         # Pure Manual Perspective: no automatic-analysis data and no learning data
@@ -1456,11 +1487,11 @@ class MovieShotAnalyzer(QMainWindow):
         lab={'vp1':'X','vp2':'Z','vp3':'Y'}.get(self.active_perspective_axis,self.active_perspective_axis.upper())
         if hasattr(self,'persp_step_label'):
             if self._persp_axis_complete.get(self.active_perspective_axis,False):
-                self.persp_step_label.setText(f'{lab} 完了：VP●または白○をドラッグして微調整')
+                self.persp_step_label.setText(f'{lab} 完了：4つの白○またはVP●をドラッグして微調整')
             elif self.perspective_step==0:
                 self.persp_step_label.setText(f'{lab} 1本目：短いエッジでもOK・ドラッグして基準線')
             else:
-                self.persp_step_label.setText(f'{lab} 2本目：短いエッジでもOK・離すと確定')
+                self.persp_step_label.setText(f'{lab} 2本目：1本目の白○もそのまま調整できます')
     def reset_active_perspective_axis(self):
         defaults=self.default_perspective_lines(); name=self.active_perspective_axis
         import copy; self.perspective_lines[name]=copy.deepcopy(defaults[name]); self._persp_axis_complete[name]=False; self.vp_at_infinity[name]=False; self.vp3_at_infinity=self.vp_at_infinity['vp3']; self._persp_anchor_touched[(name,0)]=set(); self._persp_anchor_touched.pop((name,1),None); self._persp_line1_locked[name]=None

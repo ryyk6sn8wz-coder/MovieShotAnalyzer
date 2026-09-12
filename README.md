@@ -43,3 +43,12 @@ Base: `CameraCalibrationSolver v1.3.2 Z Stable`
 ## Windows EXE
 GitHub Actions の `Build Windows EXE` を実行してください。
 Artifact `MovieShotAnalyzer-Windows` の中には `MovieShotAnalyzer.exe` が直接入ります（二重ZIPにしません）。
+
+## v1.5 - Editable VP guide endpoints
+- After the second calibration line appears, the first line's two white endpoint handles remain visible and editable.
+- Once an axis is solved, all four endpoint handles (line 1 + line 2) remain editable whenever that X/Z/Y axis is selected.
+- Dragging any of the four endpoints updates the vanishing point in real time.
+- Editing line 1 no longer resets or erases line 2.
+- The line-1 safety copy is updated after edits, preventing an older line 1 from being restored accidentally.
+- Solved VP markers remain directly draggable.
+- Lens architecture remains unchanged: X+Z drive lens/FOV; Y/VP3 is an independent drawing-perspective guide.
