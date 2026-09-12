@@ -1,9 +1,8 @@
-# Movie Shot Analyzer v2.0.5 — XYZ Label / Thumbnail Jump Fix
+# Movie Shot Analyzer v2.0.6
 
-Based on v2.0.4.
+Thumbnail jump hotfix based on v2.0.5.
 
-## Fixes
-- Perspective grid rows now use a separate checkbox and X/Z/Y label so axis letters do not get clipped by the checkbox indicator.
-- Bottom thumbnail buttons capture their shot index directly when connected. This avoids the Windows/PySide6 packaged-build issue where `sender()` / dynamic properties could fail and clicks would not navigate.
-- Thumbnail navigation remains lightweight: only the clicked source image is loaded; visible thumbnail icons are still lazy-loaded and cached.
-- Perspective/lens solver behavior is unchanged.
+- Fixed thumbnail click navigation: the old handler called two non-existent methods, so only the blue checked frame changed and the central image never moved.
+- Thumbnail click now uses the same `save_frame()` + `save_perspective()` path as Previous / Next.
+- Clicking a thumbnail loads only the selected source image; the filmstrip is not rebuilt.
+- Existing lazy thumbnail cache, perspective, lens, and XYZ UI behavior are otherwise unchanged.

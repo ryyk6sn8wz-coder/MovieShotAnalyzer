@@ -1191,7 +1191,7 @@ class MovieShotAnalyzer(QMainWindow):
         # thumbnails currently visible in the horizontal viewport are decoded.
         self._thumb_icon_cache={}
         self._thumb_visible_timer=None
-        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('v2.0.5 — fixed XYZ labels + reliable thumbnail jump')
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('v2.0.6 — thumbnail jump hotfix')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
@@ -1459,18 +1459,30 @@ class MovieShotAnalyzer(QMainWindow):
         self._jump_to_image(idx)
 
     def _jump_to_image(self,index):
+        """Jump directly to the clicked thumbnail without rebuilding the filmstrip."""
+        try:
+            index=int(index)
+        except (TypeError, ValueError):
+            return
         if not (0 <= index < len(self.paths)):
             return
         if index == self.current_index:
             self._update_bottom_selection()
             return
-        # Preserve only the current shot, then load only the clicked shot.
-        # No other source image or thumbnail is reopened here.
-        self._save_current_frame()
-        self.save_current_perspective()
+
+        # Use the same proven save path as the Previous / Next buttons.
+        # Older thumbnail code called helper names that do not exist
+        # (_save_current_frame / save_current_perspective), so the Qt slot
+        # stopped with AttributeError after merely drawing the blue checked frame.
+        self.save_frame()
+        self.save_perspective()
+
         self.current_index=index
         self.load_current()
-        self._update_bottom_selection()
+        # load_current() already updates navigation + thumbnail selection.
+        self.statusBar().showMessage(
+            f'ショット {self.current_index + 1} / {len(self.paths)} に移動', 1800
+        )
 
     def set_vp_ray_visible(self,key,value):
         self.vp_ray_visible[key]=bool(value); self.refresh()
