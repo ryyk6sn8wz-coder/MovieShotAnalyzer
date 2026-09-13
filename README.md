@@ -1,35 +1,14 @@
-# Movie Shot Analyzer v2.0.8
+# Movie Shot Analyzer v2.0.8 — X/Z Axis Isolation
 
-## Lens calibration change: FOV first
-This version does **not** add an Ozu/Tokyo Story-specific correction.
-The X/Z vanishing-point geometry continues to determine focal length in pixels and H-FOV exactly as before.
+Based on v2.0.7.
 
-The important change is that the UI now separates:
-- **H-FOV**: geometry-derived value that does not depend on sensor/film width.
-- **35mm-equivalent focal length**: normalized to a 36mm-wide full-frame reference.
-- **Capture-format focal length**: optional conversion when the acquisition aperture/sensor width is known.
+## Fix in this build
+- Added a transaction guard between X/VP1 and Z/VP2.
+- Confirming/re-solving VP2 restores and preserves the complete VP1 state before lens calculation.
+- Confirming/re-solving VP1 likewise preserves VP2.
+- Preserved base lines, auxiliary lines, completion state, infinity state/direction, locked line 1, and edit-anchor state.
+- Lens calculation may read X+Z but no longer owns or rewrites either axis.
+- VP3/Y isolation from v2.0.7 remains unchanged.
+- Stable manual pencil workflow and thumbnail navigation are unchanged.
 
-## Capture-format presets
-- 35mm equivalent / Full Frame: 36mm width (default)
-- Normal 35 Academy / N35: 22mm width
-- Super 35 DIN: 24mm width
-- Super 35 ANSI: 24.9mm width
-- Normal 16: 10.3mm width
-- Super 16: 12.35mm width
-
-The default remains 35mm equivalent so analyses across different movies stay comparable.
-Only select a capture format when it is known or strongly documented.
-
-## Why this matters
-A physical 50mm lens on Normal 35 Academy (22mm image width) has a much narrower horizontal field of view than a 50mm lens on a 36mm-wide full-frame sensor. Comparing a documented cinema-lens focal length directly with a 35mm-equivalent result can therefore look like a large error even when the FOV is much closer.
-
-## Preserved from v2.0.7
-- VP3/Y fully isolated from X/Z camera/lens solution.
-- Parallel/invalid Y cannot corrupt X/Z, eye level or lens state.
-- Qualitative lens-region fallback when exact mm cannot be solved.
-- X/Z auxiliary refinement lines.
-- Clickable lightweight thumbnail navigation.
-- Stable manual pencil workflow.
-
-## Build Windows
-Use GitHub Actions or `build_exe.bat`.
+This is a defensive bug-fix build. It does not add Ozu-specific lens correction.
