@@ -1,21 +1,12 @@
-# Movie Shot Analyzer macOS M4 build package v2.0.7
+# Movie Shot Analyzer v2.0.7
 
-## 今回の修正
-前の build_macos.command が Apple CommandLineTools 付属の Python 3.9 を拾い、pip の `encoding must be str, not None` で停止する問題を修正しました。
+## Changes
+- VP3/Y axis is fully isolated from the X/Z camera/lens solution.
+- Y/VP3 drag, anchor edits, reset, and helper-line refinement no longer recompute focal length or alter X/Z.
+- Parallel/infinite/invalid Y results affect only Y/VP3; X/Z, eye level and lens state remain intact.
+- When exact focal length cannot be solved, the app now shows an explicit qualitative lens region such as 標準域 / 中望遠域 / 中望遠〜望遠域 / 望遠域.
+- Exact-mm estimates remain X+Z only; Y/VP3 is drawing perspective only.
+- Keeps clickable lightweight thumbnail navigation and the existing v2.0.6 UI/analysis behavior.
 
-この版は:
-- UTF-8環境を明示
-- Python 3.11以上だけを使用
-- Apple Silicon Homebrew の Python 3.12/3.13 を優先
-- Homebrewがある場合は Python 3.12 を必要に応じて自動導入
-- 依存パッケージは原則バイナリwheelを使用
-
-## 使い方
-1. ZIPを展開
-2. `build_macos.command` をダブルクリック
-3. 終了後、`dist/MovieShotAnalyzer.app` または `MovieShotAnalyzer.dmg` を使用
-
-初回起動で止められた場合は Finder で app を右クリック → `開く` → `開く`。
-
-## Pythonがないと言われた場合
-Python 3.12を python.org からインストールしてから `build_macos.command` を再実行してください。
+## Build Windows
+Use GitHub Actions or `build_exe.bat`.

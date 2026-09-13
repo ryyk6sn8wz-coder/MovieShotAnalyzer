@@ -969,7 +969,10 @@ class ImageCanvas(QWidget):
             self.owner.vp_at_infinity[name]=False
             if name=='vp3': self.owner.vp3_at_infinity=False
             self.owner.align_calibration_lines_to_vp(name)
-            self.owner.recompute_lens_from_current_vps()
+            # Y/VP3 is a drawing-only perspective axis. Never let dragging VP3
+            # touch the X/Z camera/lens solution.
+            if name!='vp3':
+                self.owner.recompute_lens_from_current_vps()
             self.owner.update_perspective_labels()
         elif typ=='perspective_anchor':
             name,li,ei=self.drag_item[1],self.drag_item[2],self.drag_item[3]
@@ -1136,7 +1139,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — v2.0.2 UI/Thumbnail Hotfix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — v2.0.7 UI/Thumbnail Hotfix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         # Pure Manual Perspective: no automatic-analysis data and no learning data
@@ -1191,7 +1194,7 @@ class MovieShotAnalyzer(QMainWindow):
         # thumbnails currently visible in the horizontal viewport are decoded.
         self._thumb_icon_cache={}
         self._thumb_visible_timer=None
-        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('v2.0.6 — thumbnail jump hotfix')
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('v2.0.7 — thumbnail jump hotfix')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
@@ -1204,7 +1207,7 @@ class MovieShotAnalyzer(QMainWindow):
         root_v.addWidget(main_row,1)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(6,6,6,6); c.setSpacing(2)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('Perspective Tool + Lens Solver v2.0.2'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('Perspective Tool + Lens Solver v2.0.7'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1580,15 +1583,28 @@ class MovieShotAnalyzer(QMainWindow):
     def recompute_after_axis_refinement(self,key):
         if self._persp_axis_complete.get(key):
             q=self._axis_observation_h(key)
-            if q is not None and abs(float(q[2]))>=1e-9 and self.original is not None:
-                w=float(self.original.width); h=float(self.original.height)
-                xy=(float(q[0]/q[2])/w,float(q[1]/q[2])/h)
-                if key=='vp1': self.vp1=xy
-                elif key=='vp2': self.vp2=xy
-                else: self.vp3=xy; self.vp3_at_infinity=False
-                self.vp_at_infinity[key]=False
-        # Lens remains strictly X+Z. Y extras only stabilize the drawing grid.
-        self.recompute_lens_from_current_vps(); self.update_perspective_labels(); self.update_perspective_panel_state()
+            if q is not None and self.original is not None:
+                scale=max(1.0,math.hypot(float(q[0]),float(q[1])))
+                is_inf=abs(float(q[2])) < 1e-5*scale
+                self.vp_at_infinity[key]=bool(is_inf)
+                if is_inf:
+                    n=math.hypot(float(q[0]),float(q[1]))
+                    self.camera_inf_dir[key]=(float(q[0])/n,float(q[1])/n) if n>1e-9 else None
+                    if key=='vp3': self.vp3_at_infinity=True
+                else:
+                    w=float(self.original.width); h=float(self.original.height)
+                    xy=(float(q[0]/q[2])/w,float(q[1]/q[2])/h)
+                    if key=='vp1': self.vp1=xy
+                    elif key=='vp2': self.vp2=xy
+                    else:
+                        self.vp3=xy
+                        self.vp3_at_infinity=False
+                    self.camera_inf_dir[key]=None
+        # Strict isolation: Y/VP3 and its helper lines never trigger or mutate
+        # the X/Z lens solution. Only X or Z refinement recomputes the lens.
+        if key!='vp3':
+            self.recompute_lens_from_current_vps()
+        self.update_perspective_labels(); self.update_perspective_panel_state()
 
     def recompute_after_z_refinement(self): self.recompute_after_axis_refinement('vp2')
 
@@ -1664,7 +1680,10 @@ class MovieShotAnalyzer(QMainWindow):
         defaults=self.default_perspective_lines(); name=self.active_perspective_axis
         import copy; self.perspective_lines[name]=copy.deepcopy(defaults[name]); self._persp_axis_complete[name]=False; self.vp_at_infinity[name]=False; self.vp3_at_infinity=self.vp_at_infinity['vp3']; self._persp_anchor_touched[(name,0)]=set(); self._persp_anchor_touched.pop((name,1),None); self._persp_line1_locked[name]=None
         self.perspective_extra_lines[name]=[]; self.axis_refine_mode=None; self.update_axis_refine_labels()
-        self.perspective_step=0; self.recompute_lens_from_current_vps(); self.update_perspective_labels(); self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
+        self.perspective_step=0
+        if name!='vp3':
+            self.recompute_lens_from_current_vps()
+        self.update_perspective_labels(); self.update_perspective_panel_state(); self.save_perspective(); self.refresh()
 
     def _style(self):
         self.setStyleSheet('''QMainWindow,QWidget{background:#20242b;color:#e8edf3}#controlsWidget{background:#20242b}#controlScroll{border:1px solid #343a43;background:#20242b}#appTitle{font-size:20px;font-weight:700}#panelTitle{font-size:18px;font-weight:700}#rightPanel{background:#1b1f26;border:1px solid #343a43}QTabWidget::pane{border:1px solid #343a43;background:#1b1f26}QTabBar::tab{background:#272d36;border:1px solid #3e4652;padding:6px 10px;margin-right:2px}QTabBar::tab:selected{background:#2d6cdf;color:white}QPushButton:checked{background:#2d6cdf;border-color:#68a0ff;color:white}#subtitle,#note{color:#aeb7c4}#section{font-size:14px;font-weight:700;color:#d9e2ec;margin-top:8px;border-top:1px solid #3b424d;padding-top:8px}#fileLabel{background:#171a20;border:1px solid #343a43;border-radius:5px;padding:5px}QPushButton{background:#303641;border:1px solid #48505d;border-radius:5px;padding:5px}QPushButton:hover{background:#3a424f}#panelToggle{padding:2px;font-size:17px;font-weight:700;background:#252b34;border-radius:3px}QPushButton:disabled{color:#69717c;background:#272b32}QLabel{min-height:18px;padding-top:1px;padding-bottom:1px}QCheckBox{min-height:20px;padding:1px}QDoubleSpinBox{background:#171a20;border:1px solid #48505d;padding:4px}QSlider::groove:horizontal{height:4px;background:#3b424d}QSlider::handle:horizontal{width:14px;margin:-5px 0;background:#8ab4f8;border-radius:7px}QScrollBar:vertical{background:#20242b;width:12px}QScrollBar::handle:vertical{background:#4a5260;min-height:28px;border-radius:5px}QStatusBar{background:#171a20;color:#aeb7c4}''')
@@ -2168,16 +2187,26 @@ class MovieShotAnalyzer(QMainWindow):
     def solve_perspective_axis(self,name):
         q=self._axis_observation_h(name)
         if q is None or self.original is None:return False
-        w=float(self.original.width); h=float(self.original.height); scale=max(1.0,math.hypot(float(q[0]),float(q[1]))); is_inf=abs(float(q[2])) < 1e-5*scale; self.vp_at_infinity[name]=bool(is_inf); self.camera_inf_dir[name]=None
+        w=float(self.original.width); h=float(self.original.height)
+        scale=max(1.0,math.hypot(float(q[0]),float(q[1])))
+        is_inf=abs(float(q[2])) < 1e-5*scale
+        self.vp_at_infinity[name]=bool(is_inf)
+        self.camera_inf_dir[name]=None
         if is_inf:
-            n=math.hypot(float(q[0]),float(q[1]));
+            n=math.hypot(float(q[0]),float(q[1]))
             if n>1e-9:self.camera_inf_dir[name]=(float(q[0])/n,float(q[1])/n)
         else:
             px=float(q[0]/q[2]); py=float(q[1]/q[2]); v=(px/w,py/h)
             if name=='vp1': self.vp1=v
             elif name=='vp2': self.vp2=v
             else: self.vp3=v
-        self.vp3_at_infinity=self.vp_at_infinity.get('vp3',False); self.recompute_lens_from_current_vps(); self.update_perspective_labels();
+        if name=='vp3':
+            # VP3 is fully isolated from the camera/lens solver. A bad/parallel Y
+            # observation may disable only Y; X/Z, eye level and lens stay untouched.
+            self.vp3_at_infinity=bool(is_inf)
+        else:
+            self.recompute_lens_from_current_vps()
+        self.update_perspective_labels()
         if hasattr(self,'canvas'): self.canvas.update()
         return True
 
@@ -2578,7 +2607,31 @@ class MovieShotAnalyzer(QMainWindow):
             ax=sens.get('x_angle') if sens else None; az=sens.get('z_angle') if sens else None
             near_inf=any(a is not None and a < 0.45 for a in (ax,az))
             reason='一方のVPがほぼ無限遠で数値推定が不安定' if near_inf else '現在のX/Zでは直交2VPの焦点距離解が安定しない'
-            txt=f'焦点距離：推定不可\nレンズ感（参考）：{feel}\n{reason}'
+            # Explicit lens-region label remains useful even when exact focal
+            # length is mathematically indeterminate. This is deliberately
+            # qualitative and must not be treated as an exact mm estimate.
+            domain=feel
+            if feel_range is not None:
+                flo,fhi=feel_range
+                if flo>=100:
+                    domain='望遠域'
+                elif flo>=60 and fhi>=100:
+                    domain='中望遠〜望遠域'
+                elif flo>=60:
+                    domain='中望遠域'
+                elif fhi<35:
+                    domain='広角域'
+                elif fhi<60:
+                    domain='標準域'
+                elif flo>=35 and fhi<100:
+                    domain='標準〜中望遠域'
+                elif '中望遠' in feel or '望遠' in feel:
+                    domain='中望遠〜望遠域'
+                else:
+                    domain=f'{feel}域' if not feel.endswith('域') else feel
+            elif feel!='判定困難':
+                domain=f'{feel}域' if not feel.endswith('域') else feel
+            txt=f'焦点距離：推定不可\nレンズ域（参考）：{domain}\n{reason}'
             if feel_range is not None:
                 txt+=f'\n参考感度 {feel_range[0]:.0f}–{feel_range[1]:.0f}mm相当（数値確定には使用しません）'
             for t in targets:t.setText(txt)
