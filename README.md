@@ -1,14 +1,19 @@
-# Movie Shot Analyzer v2.0.8 — X/Z Axis Isolation
+# Movie Shot Analyzer v2.0.9 — Lens Reliability Gate
 
-Based on v2.0.7.
+Based on v2.0.8 X/Z Axis Isolation.
 
 ## Fix in this build
-- Added a transaction guard between X/VP1 and Z/VP2.
-- Confirming/re-solving VP2 restores and preserves the complete VP1 state before lens calculation.
-- Confirming/re-solving VP1 likewise preserves VP2.
-- Preserved base lines, auxiliary lines, completion state, infinity state/direction, locked line 1, and edit-anchor state.
-- Lens calculation may read X+Z but no longer owns or rewrites either axis.
-- VP3/Y isolation from v2.0.7 remains unchanged.
-- Stable manual pencil workflow and thumbnail navigation are unchanged.
+- Added a reliability gate for artist-facing focal-length/FOV display.
+- Low-confidence X/Z solutions are no longer shown as exact mm or FOV values.
+- Prevents unstable geometry from being presented as plausible ultra-wide values such as 9–12 mm.
+- Low-confidence cases now show:
+  - 焦点距離：推定不可
+  - レンズ域（参考）：判定困難
+  - the instability reason
+- Raw X/Z focal solution remains available only in the expandable diagnostic text and is explicitly marked as low-confidence / unused for display judgement.
+- Medium/high-confidence results continue to show exact mm and H-FOV.
+- Existing infinite-VP qualitative fallback remains unchanged.
+- X/Z manual-only calculation policy and Y/VP3 isolation are unchanged.
 
-This is a defensive bug-fix build. It does not add Ozu-specific lens correction.
+## Safety behavior
+This build does not clamp suspicious values to a preferred focal length. It rejects unstable numerical precision instead, so a genuine well-supported ultra-wide shot can still be reported if its X/Z solution is stable enough.

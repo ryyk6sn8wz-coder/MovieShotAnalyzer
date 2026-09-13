@@ -2333,7 +2333,11 @@ class MovieShotAnalyzer(QMainWindow):
             marks=[]
             for k,l in [('vp1','X'),('vp2','Z'),('vp3','Y')]: marks.append(f'{l} '+('∞' if inf.get(k,False) and self._persp_axis_complete.get(k,False) else ('✓' if self._persp_axis_complete.get(k,False) else '—')))
             extra=''
-            if getattr(self,'camera_solution',None):extra=f'   |   {self.camera_solution["eq35"]:.1f}mm / {self.camera_solution["hfov"]:.1f}°'
+            if getattr(self,'camera_solution',None):
+                # The compact status intentionally avoids raw mm/FOV. Reliability
+                # is evaluated in the lens panel; showing the unchecked raw solve
+                # here could reintroduce a false ultra-wide number.
+                extra='   |   Lens 詳細参照'
             self.persp_status_label.setText('   '.join(marks)+extra)
         self.update_lens_estimate()
 
@@ -2557,6 +2561,12 @@ class MovieShotAnalyzer(QMainWindow):
             if camera_delta is not None and camera_delta>0.25:
                 reason+='（差が大きいため要注意）'
 
+        # Exact mm/FOV are artist-facing only when the X/Z solution is stable enough.
+        # A low-confidence solution is still kept internally for diagnostics, but it
+        # must not be presented as a real lens estimate. This prevents unstable
+        # X/Z configurations from appearing as plausible 8-12 mm ultra-wide shots.
+        numeric_reliable = (lens_conf != '低')
+
         return {
             'eq35':eq35,
             'base35':eq35,
@@ -2566,6 +2576,7 @@ class MovieShotAnalyzer(QMainWindow):
             'vfov':vfov,
             'kind':kind,
             'confidence':lens_conf,
+            'numeric_reliable':numeric_reliable,
             'pairs':[('X×Z raw',primary['fpx'])],
             'spread':None,
             'reason':reason,
@@ -2672,6 +2683,28 @@ class MovieShotAnalyzer(QMainWindow):
             for d in detail_targets:d.setText('X/Zの微小角度変化からレンズ感だけを参考表示。Y/VP3はレンズ判定に使用しません。')
             if hasattr(self,'shot_analysis'): self.shot_analysis.setText(self._shot_analysis_text(fallback_feel=feel))
             return
+        # Safety gate: low-confidence focal solutions are not shown as exact mm/FOV.
+        # Keep the raw solution only in the expandable diagnostic text.  In the main
+        # UI, explicitly say that the numerical estimate is unstable instead of
+        # misclassifying the shot as ultra-wide/telephoto.
+        if not est.get('numeric_reliable', False):
+            sens=est.get('sensitivity') or {}
+            reason=est.get('instability_reason') or '現在のX/Zでは焦点距離の数値推定が安定しない'
+            txt=f'焦点距離：推定不可\nレンズ域（参考）：判定困難\n{reason}'
+            for t in targets: t.setText(txt)
+            if hasattr(self,'shot_analysis'):
+                self.shot_analysis.setText(self._shot_analysis_text(fallback_feel='判定困難'))
+            details=[]
+            details.append(f"内部X/Z解: {est['eq35']:.1f}mm相当（低信頼・表示判定には不使用）")
+            if sens and sens.get('p10') is not None and sens.get('p90') is not None:
+                details.append(f"角度感度: {sens['p10']:.1f}–{sens['p90']:.1f}mm（10–90%） / 解失敗 {sens.get('failed_ratio',0)*100:.0f}%")
+            if sens.get('x_angle') is not None and sens.get('z_angle') is not None:
+                details.append(f"基準線交差角: X {sens['x_angle']:.2f}° / Z {sens['z_angle']:.2f}°")
+            details.append('安全判定: 信頼度「低」のためmm/FOV/レンズ域を確定表示しません。')
+            details.append('※ Y/VP3はレンズ判定に使用しません。')
+            for d in detail_targets: d.setText(' / '.join(details))
+            return
+
         cand=' / '.join(f'{x}mm' for x in est['candidates'])
         sens=est.get('sensitivity') or {}
         lineinfo=''
