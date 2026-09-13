@@ -27,7 +27,7 @@ from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPen, QPixmap, QPol
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QFileDialog, QGridLayout, QHBoxLayout,
     QLabel, QMainWindow, QPushButton, QScrollArea, QSlider, QDoubleSpinBox, QLineEdit,
-    QVBoxLayout, QWidget, QTabWidget, QMessageBox, QSizePolicy
+    QVBoxLayout, QWidget, QTabWidget, QMessageBox, QSizePolicy, QComboBox
 )
 
 IMAGE_EXTENSIONS={'.jpg','.jpeg','.png','.bmp','.webp','.tif','.tiff'}
@@ -1139,7 +1139,7 @@ class ImageCanvas(QWidget):
 
 class MovieShotAnalyzer(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — v2.0.7 UI/Thumbnail Hotfix'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
+        super().__init__(); self.setWindowTitle('Movie Shot Analyzer — v2.0.8 FOV/Film Format'); self.resize(1500,920); self.setMinimumSize(1050,680); self.setAcceptDrops(True)
         self.paths=[]; self.current_index=-1; self.original=None; self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.frames={}
         self.perspective_by_image={}
         # Pure Manual Perspective: no automatic-analysis data and no learning data
@@ -1194,7 +1194,7 @@ class MovieShotAnalyzer(QMainWindow):
         # thumbnails currently visible in the horizontal viewport are decoded.
         self._thumb_icon_cache={}
         self._thumb_visible_timer=None
-        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('v2.0.7 — thumbnail jump hotfix')
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('v2.0.8 — FOV-first / film-format focal conversion')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
@@ -1207,7 +1207,7 @@ class MovieShotAnalyzer(QMainWindow):
         root_v.addWidget(main_row,1)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(6,6,6,6); c.setSpacing(2)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('Perspective Tool + Lens Solver v2.0.7'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('Perspective Tool + Lens Solver v2.0.8'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1295,6 +1295,11 @@ class MovieShotAnalyzer(QMainWindow):
         row=QHBoxLayout(); row.addWidget(QLabel('線幅')); self.perspective_line_width=StepControl(0.5,5.0,0.5,0.5); self.perspective_line_width.value.valueChanged.connect(self.refresh); row.addWidget(self.perspective_line_width); lay.addLayout(row)
         row=QHBoxLayout(); row.addWidget(QLabel('透明度')); self.perspective_alpha=QSlider(Qt.Orientation.Horizontal); self.perspective_alpha.setRange(0,100); self.perspective_alpha.setValue(70); self.perspective_alpha.valueChanged.connect(self.refresh); row.addWidget(self.perspective_alpha,1); self.perspective_alpha_label=QLabel('70%'); self.perspective_alpha_label.setFixedWidth(38); self.perspective_alpha.valueChanged.connect(lambda v:self.perspective_alpha_label.setText(f'{v}%')); row.addWidget(self.perspective_alpha_label); lay.addLayout(row)
         self.section(lay,'カメラ / レンズ')
+        fmtrow=QHBoxLayout(); fmtrow.setSpacing(5); fmtlab=QLabel('換算基準'); fmtlab.setToolTip('消失点から直接決まるのは画角です。mm値は撮影面の横幅によって変わります。通常比較は36mm（フルサイズ換算）のまま使えます。'); fmtrow.addWidget(fmtlab)
+        self.lens_format_combo=QComboBox(); self.lens_format_combo.setMinimumWidth(0); self.lens_format_combo.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
+        for label,width in [('35mm換算 / FF 36mm',36.0),('35mm映画 Academy 22mm',22.0),('Super35 DIN 24mm',24.0),('Super35 ANSI 24.9mm',24.9),('16mm N16 10.3mm',10.3),('Super16 12.35mm',12.35)]: self.lens_format_combo.addItem(label,width)
+        self.lens_format_combo.setToolTip('35mm換算は作品横断比較用。撮影フォーマットが分かる場合だけ実撮影に近いmmへ切替。Academy/N35は22×16mm、S35 DINは24×18mm、S35 ANSIは24.9×18.7mm。')
+        self.lens_format_combo.currentIndexChanged.connect(self.update_lens_estimate); fmtrow.addWidget(self.lens_format_combo,1); lay.addLayout(fmtrow)
         self.persp_lens=QLabel('X＋Zを確定するとレンズ推定を開始します。'); self.persp_lens.setObjectName('fileLabel'); self.persp_lens.setWordWrap(True); self.persp_lens.setMinimumWidth(0); lay.addWidget(self.persp_lens)
         self.camera_solve_label=QLabel('主点：画像中央 / Yは作画用として独立'); self.camera_solve_label.setObjectName('note'); self.camera_solve_label.setWordWrap(True); self.camera_solve_label.hide()
         self.shot_analysis=QLabel('ショット分析：X＋Z確定後に表示します。'); self.shot_analysis.setObjectName('fileLabel'); self.shot_analysis.setWordWrap(True); self.shot_analysis.setMinimumWidth(0); lay.addWidget(self.shot_analysis)
@@ -2169,7 +2174,7 @@ class MovieShotAnalyzer(QMainWindow):
         self.eye_level_y=(y1+(0.5-x1)*(y2-y1)/(x2-x1)) if abs(x2-x1)>1e-12 else (y1+y2)*0.5
         self.camera_solve_error=self._xz_orthogonality_error_deg(fpx)
         self.camera_solution={'cx':w*0.5,'cy':h*0.5,'fpx':fpx,'hfov':math.degrees(2.0*math.atan(w/(2.0*fpx))),'vfov':math.degrees(2.0*math.atan(h/(2.0*fpx))),'eq35':36.0*fpx/w,'error_deg':self.camera_solve_error}
-        if hasattr(self,'camera_solve_label'): self.camera_solve_label.setText(f'主点：画像中央  |  {self.camera_solution["eq35"]:.1f}mm eq.  |  H-FOV {self.camera_solution["hfov"]:.1f}°')
+        if hasattr(self,'camera_solve_label'): self.camera_solve_label.setText(f'主点：画像中央  |  H-FOV {self.camera_solution["hfov"]:.1f}°  |  35mm換算 {self.camera_solution["eq35"]:.1f}mm')
         return True
 
     def _xz_orthogonality_error_deg(self,fpx):
@@ -2299,7 +2304,7 @@ class MovieShotAnalyzer(QMainWindow):
             marks=[]
             for k,l in [('vp1','X'),('vp2','Z'),('vp3','Y')]: marks.append(f'{l} '+('∞' if inf.get(k,False) and self._persp_axis_complete.get(k,False) else ('✓' if self._persp_axis_complete.get(k,False) else '—')))
             extra=''
-            if getattr(self,'camera_solution',None):extra=f'   |   {self.camera_solution["eq35"]:.1f}mm / {self.camera_solution["hfov"]:.1f}°'
+            if getattr(self,'camera_solution',None):extra=f'   |   {self.camera_solution["eq35"]:.1f}mm換算 / {self.camera_solution["hfov"]:.1f}°'
             self.persp_status_label.setText('   '.join(marks)+extra)
         self.update_lens_estimate()
 
@@ -2568,6 +2573,20 @@ class MovieShotAnalyzer(QMainWindow):
         feel=fallback_feel or '判定困難'
         return f'レンズ感：{feel}（参考）　｜　パース/圧縮：保留'
 
+    def _lens_format_width_mm(self):
+        combo=getattr(self,'lens_format_combo',None)
+        if combo is None:return 36.0
+        try:return float(combo.currentData())
+        except Exception:return 36.0
+
+    def _lens_format_label(self):
+        combo=getattr(self,'lens_format_combo',None)
+        return combo.currentText() if combo is not None else '35mm換算 / FF 36mm'
+
+    def _format_focal_mm_from_eq35(self,eq35):
+        if eq35 is None:return None
+        return float(eq35)*(self._lens_format_width_mm()/36.0)
+
     def update_lens_estimate(self):
         targets=[x for x in (getattr(self,'analysis_lens',None),getattr(self,'persp_lens',None)) if x is not None]
         detail_targets=[x for x in (getattr(self,'lens_detail',None),getattr(self,'persp_lens_detail',None)) if x is not None]
@@ -2643,15 +2662,28 @@ class MovieShotAnalyzer(QMainWindow):
         lineinfo=''
         if sens.get('x_lines',2)>2 or sens.get('z_lines',2)>2:
             lineinfo=f"   X{sens.get('x_lines',2)}本/Z{sens.get('z_lines',2)}本"
+        fmt_w=self._lens_format_width_mm(); fmt_label=self._lens_format_label(); fmt_mm=self._format_focal_mm_from_eq35(est['eq35'])
+        if abs(fmt_w-36.0)<1e-6:
+            first_line=f"H-FOV {est['hfov']:.1f}°   |   35mm換算 {est['eq35']:.1f}mm"
+        else:
+            first_line=f"H-FOV {est['hfov']:.1f}°   |   {fmt_mm:.1f}mm ({fmt_label})"
         lens_text=(
-            f"{est['eq35']:.1f}mm eq.   H-FOV {est['hfov']:.1f}°\n"
-            f"感度 {est['lo']:.0f}–{est['hi']:.0f}mm   {est['kind']}   信頼度：{est['confidence']}{lineinfo}"
+            first_line+"\n"+
+            f"35mm換算感度 {est['lo']:.0f}–{est['hi']:.0f}mm   {est['kind']}   信頼度：{est['confidence']}{lineinfo}"
         )
         if est.get('instability_reason'):
             lens_text += f"\n⚠ {est['instability_reason']}"
         for t in targets: t.setText(lens_text)
         if hasattr(self,'shot_analysis'): self.shot_analysis.setText(self._shot_analysis_text(est['eq35'],est['hfov'],est['confidence']))
         details=[]
+        fmt_w=self._lens_format_width_mm(); fmt_label=self._lens_format_label(); fmt_mm=self._format_focal_mm_from_eq35(est['eq35'])
+        details.append(f"幾何H-FOV: {est['hfov']:.2f}°")
+        details.append(f"35mm換算: {est['eq35']:.1f}mm")
+        if abs(fmt_w-36.0)>=1e-6:
+            details.append(f"選択撮影幅換算: {fmt_mm:.1f}mm（横幅 {fmt_w:g}mm / {fmt_label}）")
+            details.append(f"同換算感度: {est['lo']*fmt_w/36.0:.1f}–{est['hi']*fmt_w/36.0:.1f}mm")
+        if est['pairs'] and est['pairs'][0][1] is not None:
+            details.append(f"内部f: {est['pairs'][0][1]:.1f}px / 画像幅 {float(self.original.width):.0f}px")
         for label,val in est['pairs']:
             if val is not None:
                 details.append(f"{label}: {36.0*val/max(float(self.original.width),1.0):.1f}mm相当")
@@ -2666,7 +2698,7 @@ class MovieShotAnalyzer(QMainWindow):
                 details.append(f"基準線交差角: X {sens['x_angle']:.2f}° / Z {sens['z_angle']:.2f}°")
         details.append(f"判定理由: {est['reason']}")
         detail_text=' / '.join(details)
-        detail_text += '\n※ Y/VP3を動かしてもレンズ値は変化しません。'
+        detail_text += '\n※ H-FOVは撮影フォーマットに依存しない幾何値。mmは撮影面の横幅で変わります。Y/VP3はレンズ値を変更しません。'
         for d in detail_targets: d.setText(detail_text)
 
     def comp_edit_toggled(self,on):
