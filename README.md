@@ -1,19 +1,34 @@
-# Movie Shot Analyzer v2.0.9 — Lens Reliability Gate
+# Movie Shot Analyzer v2.0.10 — Background Batch Export
 
-Based on v2.0.8 X/Z Axis Isolation.
+Based on v2.0.9 Lens Reliability Gate.
 
-## Fix in this build
-- Added a reliability gate for artist-facing focal-length/FOV display.
-- Low-confidence X/Z solutions are no longer shown as exact mm or FOV values.
-- Prevents unstable geometry from being presented as plausible ultra-wide values such as 9–12 mm.
-- Low-confidence cases now show:
-  - 焦点距離：推定不可
-  - レンズ域（参考）：判定困難
-  - the instability reason
-- Raw X/Z focal solution remains available only in the expandable diagnostic text and is explicitly marked as low-confidence / unused for display judgement.
-- Medium/high-confidence results continue to show exact mm and H-FOV.
-- Existing infinite-VP qualitative fallback remains unchanged.
-- X/Z manual-only calculation policy and Y/VP3 isolation are unchanged.
+## Main fix
+- `全画像を一括書き出し` now runs in a **separate background process**.
+- The main Movie Shot Analyzer window no longer cycles through every image during export.
+- You can keep changing shots, zooming, drawing guides, and using the app while the batch export continues.
+- Export progress is reported back to the main window.
+- The existing cancel button terminates the background exporter without closing the main app.
 
-## Safety behavior
-This build does not clamp suspicious values to a preferred focal length. It rejects unstable numerical precision instead, so a genuine well-supported ultra-wide shot can still be reported if its X/Z solution is stable enough.
+## Why this changes the previous behavior
+v2.0.9 moved PNG file compression/writing to worker threads, but image loading and canvas rendering still ran on Qt's GUI thread. That meant a large batch could still monopolize the interface and make the app appear frozen.
+
+v2.0.10 takes a snapshot of the export state and launches a second Movie Shot Analyzer process dedicated to rendering and saving. The normal app UI is therefore not used by the export loop.
+
+## Export snapshot
+At the moment `全画像を一括書き出し` is pressed, the exporter snapshots:
+- source image list
+- frame transforms
+- saved perspective data for each image
+- composition-guide visibility and positions
+- helper lines
+- guide/frame/perspective colors, widths and opacity
+- brightness / contrast / gamma / saturation
+
+Edits made **after** the batch starts do not change that batch. This is intentional so the user can continue working safely while export is running.
+
+## Existing v2.0.9 behavior retained
+- X/Z manual-only lens calculation
+- Y/VP3 isolation
+- Lens Reliability Gate
+- Low-confidence focal-length/FOV suppression
+- Infinite-VP qualitative fallback

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import math, sys, json, os, copy
+import math, sys, json, os, copy, tempfile
 from concurrent.futures import ThreadPoolExecutor
 import random
 from pathlib import Path
@@ -22,7 +22,7 @@ STRUCTURAL_LONG_LINE_BONUS = 1.55
 LOW_CONFIDENCE_VP_THRESHOLD = 0.30
 EYE_LEVEL_FORCE_HORIZONTAL = True
 
-from PySide6.QtCore import QRectF, Qt, QPointF, QEvent, QTimer
+from PySide6.QtCore import QRectF, Qt, QPointF, QEvent, QTimer, QProcess
 from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QFileDialog, QGridLayout, QHBoxLayout,
@@ -1184,6 +1184,9 @@ class MovieShotAnalyzer(QMainWindow):
         self.batch_export_running=False
         self.batch_export_cancelled=False
         self.batch_export_executor=ThreadPoolExecutor(max_workers=max(2,min(8,(os.cpu_count() or 4))))
+        self.batch_export_process=None
+        self.batch_export_snapshot_path=None
+        self._batch_stdout_buffer=''
         self.auto_frame_on_load=True
         # Bottom thumbnail view is built lazily in small batches and cached.
         # Rebuilding every thumbnail on each shot change caused severe UI stalls.
@@ -1194,7 +1197,7 @@ class MovieShotAnalyzer(QMainWindow):
         # thumbnails currently visible in the horizontal viewport are decoded.
         self._thumb_icon_cache={}
         self._thumb_visible_timer=None
-        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('v2.0.8 — X/Z axis transaction guard')
+        self._persp_anchor_touched={}; self._persp_axis_complete={'vp1':False,'vp2':False,'vp3':False}; self._build_ui(); self._style(); self.statusBar().showMessage('v2.0.10 — true background batch export')
     def section(self,lay,text):
         lab=QLabel(text); lab.setObjectName('section'); lay.addWidget(lab)
     def _build_ui(self):
@@ -1207,7 +1210,7 @@ class MovieShotAnalyzer(QMainWindow):
         root_v.addWidget(main_row,1)
         cw=QWidget(); cw.setObjectName('controlsWidget'); c=QVBoxLayout(cw); c.setContentsMargins(6,6,6,6); c.setSpacing(2)
         title=QLabel('Movie Shot Analyzer'); title.setObjectName('appTitle'); c.addWidget(title)
-        sub=QLabel('Perspective Tool + Lens Solver v2.0.7'); sub.setObjectName('subtitle'); c.addWidget(sub)
+        sub=QLabel('Perspective Tool + Lens Solver v2.0.10'); sub.setObjectName('subtitle'); c.addWidget(sub)
         a=QPushButton('画像を開く'); a.clicked.connect(self.choose_images); b=QPushButton('フォルダを開く'); b.clicked.connect(self.choose_folder); c.addWidget(a); c.addWidget(b)
         self.file_label=QLabel('画像未選択'); self.file_label.setWordWrap(True); self.file_label.setObjectName('fileLabel'); c.addWidget(self.file_label)
         nav=QHBoxLayout(); self.prev_button=QPushButton('◀ 前'); self.next_button=QPushButton('次 ▶'); self.prev_button.clicked.connect(self.prev_image); self.next_button.clicked.connect(self.next_image); nav.addWidget(self.prev_button); nav.addWidget(self.next_button); c.addLayout(nav)
@@ -1911,6 +1914,50 @@ class MovieShotAnalyzer(QMainWindow):
             QMessageBox.warning(self,'画像書き出し','画像の保存に失敗しました。'); return
         self.statusBar().showMessage(f'画像を書き出しました: {destination}',6000)
 
+    def _batch_export_snapshot(self,out_dir):
+        """Serialize everything the child exporter needs, without touching the live UI again."""
+        checkbox_names=(
+            'show_frame','manual_frame','lock_frame','auto_frame_check','show_perspective',
+            'show_perspective_handles','show_perspective_grid','show_thirds','show_cross',
+            'show_golden','show_spiral','show_diagonal','show_triangle','show_symmetry',
+            'show_radiating','show_tunnel','show_golden_triangle','show_circle','show_cshape',
+            'show_vshape','show_double_diagonal','show_scurve','show_lshape','show_pyramid',
+            'edit_comp_guides','show_points'
+        )
+        checks={}
+        for name in checkbox_names:
+            obj=getattr(self,name,None)
+            if obj is not None and hasattr(obj,'isChecked'):
+                checks[name]=bool(obj.isChecked())
+        return {
+            'version':1,
+            'out':str(out_dir),
+            'paths':[str(p) for p in self.paths],
+            'frames':copy.deepcopy(self.frames),
+            'perspective_by_image':copy.deepcopy(self.perspective_by_image),
+            'checks':checks,
+            'sliders':{k:int(v.value()) for k,v in self.sliders.items()},
+            'values':{
+                'frame_width':float(self.frame_width.val()),
+                'frame_alpha':int(self.frame_alpha.value()),
+                'guide_width':float(self.guide_width.val()),
+                'guide_alpha':int(self.guide_alpha.value()),
+                'point_size':float(self.point_size.val()),
+                'perspective_line_width':float(self.perspective_line_width.val()),
+                'perspective_alpha':int(self.perspective_alpha.value()),
+                'workspace_scale':100,
+            },
+            'colors':{
+                'helper_color':self.helper_color,'point_color':self.point_color,'frame_color':self.frame_color,
+                'vp_ray_colors':copy.deepcopy(self.vp_ray_colors),
+            },
+            'vp_ray_counts':copy.deepcopy(self.vp_ray_counts),
+            'vp_ray_visible':copy.deepcopy(self.vp_ray_visible),
+            'helpers':{'v':copy.deepcopy(self.helper_v),'h':copy.deepcopy(self.helper_h),'free':copy.deepcopy(self.helper_free)},
+            'comp_guides':copy.deepcopy(self.comp_guides),
+            'window_size':[int(self.width()),int(self.height())],
+        }
+
     def batch_export_images(self):
         if self.batch_export_running:
             self.statusBar().showMessage('一括書き出しはすでに実行中です',4000); return
@@ -1919,95 +1966,105 @@ class MovieShotAnalyzer(QMainWindow):
         out=QFileDialog.getExistingDirectory(self,'全画像の保存先')
         if not out:return
         self.save_frame(); self.save_perspective()
+        try:
+            snap=self._batch_export_snapshot(out)
+            fd,tmp=tempfile.mkstemp(prefix='msa_batch_',suffix='.json')
+            os.close(fd)
+            Path(tmp).write_text(json.dumps(snap,ensure_ascii=False),encoding='utf-8')
+            self.batch_export_snapshot_path=tmp
+        except Exception as ex:
+            QMessageBox.warning(self,'一括書き出し',f'書き出し準備に失敗しました。\n{ex}'); return
+
         self.batch_export_running=True; self.batch_export_cancelled=False
         self.export_batch_button.setEnabled(False); self.export_cancel_button.setEnabled(True)
-        self._batch_state={
-            'out':Path(out),'paths':list(self.paths),'pos':0,'saved':0,'failures':[],
-            'return_index':self.current_index,'futures':[]
-        }
-        self.export_progress_label.setText(f'書き出し: 0 / {len(self.paths)}')
-        self.statusBar().showMessage('一括書き出しを開始しました。操作は続けられます。')
-        QTimer.singleShot(0,self._batch_export_step)
+        self.export_progress_label.setText(f'書き出し: 0 / {len(self.paths)}（別プロセス）')
+        self.statusBar().showMessage('一括書き出しをバックグラウンドで開始しました。通常どおり操作できます。')
+        self._batch_stdout_buffer=''
 
-    @staticmethod
-    def _save_export_qimage(qimg,destination):
-        try:
-            ok=qimg.save(str(destination),'PNG')
-            return bool(ok), str(destination)
-        except Exception as ex:
-            return False, str(ex)
+        proc=QProcess(self)
+        self.batch_export_process=proc
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
+        proc.readyReadStandardOutput.connect(self._batch_export_read_stdout)
+        proc.readyReadStandardError.connect(self._batch_export_read_stderr)
+        proc.finished.connect(self._batch_export_process_finished)
+        if getattr(sys,'frozen',False):
+            program=sys.executable; args=['--batch-export-worker',tmp]
+        else:
+            program=sys.executable; args=[str(Path(__file__).resolve()),'--batch-export-worker',tmp]
+        proc.start(program,args)
+        if not proc.waitForStarted(3000):
+            err=proc.errorString()
+            self._cleanup_batch_process_state()
+            QMessageBox.warning(self,'一括書き出し',f'バックグラウンド書き出しを開始できませんでした。\n{err}')
 
-    def _batch_export_step(self):
-        st=getattr(self,'_batch_state',None)
-        if not self.batch_export_running or st is None:return
-        if self.batch_export_cancelled or st['pos']>=len(st['paths']):
-            self._finish_batch_export(); return
+    def _batch_export_read_stdout(self):
+        proc=self.batch_export_process
+        if proc is None:return
+        self._batch_stdout_buffer += bytes(proc.readAllStandardOutput()).decode('utf-8','replace')
+        while '\n' in self._batch_stdout_buffer:
+            line,self._batch_stdout_buffer=self._batch_stdout_buffer.split('\n',1)
+            line=line.strip()
+            if not line:continue
+            parts=line.split('\t')
+            if parts[0]=='PROGRESS' and len(parts)>=4:
+                try:
+                    pos,total=int(parts[1]),int(parts[2])
+                    self.export_progress_label.setText(f'書き出し: {pos} / {total}（バックグラウンド）')
+                    self.statusBar().showMessage(f'一括書き出し {pos}/{total} — バックグラウンド処理中')
+                except Exception:pass
+            elif parts[0]=='DONE' and len(parts)>=4:
+                try:
+                    self._batch_done=(int(parts[1]),int(parts[2]),int(parts[3]))
+                except Exception:pass
+            elif parts[0]=='FAIL' and len(parts)>=2:
+                self._batch_last_failure='\t'.join(parts[1:])
 
-        # Snapshot the user's current image. Rendering remains on Qt's GUI thread for safety,
-        # while PNG compression/writing is sent to worker threads. One frame per event-loop
-        # turn keeps the application responsive instead of locking the UI for the whole batch.
-        user_index=self.current_index
-        idx=st['pos']; path=st['paths'][idx]
-        try:
-            self.current_index=idx
-            self.load_current()
-            qimg=self._render_export_image()
-            dest=st['out']/(path.stem+'_guides.png')
-            if dest.exists(): dest=st['out']/(f'{path.stem}_{idx+1:04d}_guides.png')
-            if qimg is None:
-                st['failures'].append(path.name)
-            else:
-                # Detach image bytes from the GUI backing store before worker-thread save.
-                detached=qimg.copy()
-                fut=self.batch_export_executor.submit(self._save_export_qimage,detached,dest)
-                st['futures'].append((path.name,fut))
-        except Exception as ex:
-            st['failures'].append(f'{path.name}: {ex}')
-        finally:
-            # Restore whatever the user was looking at before this short render slice.
-            if 0<=user_index<len(self.paths):
-                self.current_index=user_index
-                self.load_current()
+    def _batch_export_read_stderr(self):
+        proc=self.batch_export_process
+        if proc is None:return
+        text=bytes(proc.readAllStandardError()).decode('utf-8','replace').strip()
+        if text:self._batch_last_failure=text[-1200:]
 
-        st['pos']+=1
-        self.export_progress_label.setText(f"書き出し: {st['pos']} / {len(st['paths'])}")
-        self.statusBar().showMessage(f"一括書き出し {st['pos']}/{len(st['paths'])} — バックグラウンド保存中")
-        QTimer.singleShot(1,self._batch_export_step)
-
-    def _finish_batch_export(self):
-        st=getattr(self,'_batch_state',None)
-        if st is None:return
-        # Poll workers without freezing the GUI; finish only after outstanding PNG writes complete.
-        pending=[x for x in st['futures'] if not x[1].done()]
-        if pending:
-            self.export_progress_label.setText(f"書き出し: {st['pos']} / {len(st['paths'])}（保存完了待ち {len(pending)}）")
-            QTimer.singleShot(50,self._finish_batch_export); return
-        for name,fut in st['futures']:
-            try:
-                ok,msg=fut.result()
-                if ok: st['saved']+=1
-                else: st['failures'].append(f'{name}: {msg}')
-            except Exception as ex:
-                st['failures'].append(f'{name}: {ex}')
-
-        cancelled=self.batch_export_cancelled
-        self.batch_export_running=False; self.batch_export_cancelled=False
+    def _cleanup_batch_process_state(self):
+        self.batch_export_running=False
         self.export_batch_button.setEnabled(True); self.export_cancel_button.setEnabled(False)
-        self.export_progress_label.setText('書き出し: キャンセル済み' if cancelled else '書き出し: 完了')
+        if self.batch_export_snapshot_path:
+            try:Path(self.batch_export_snapshot_path).unlink(missing_ok=True)
+            except Exception:pass
+        self.batch_export_snapshot_path=None
+        if self.batch_export_process is not None:
+            self.batch_export_process.deleteLater()
+        self.batch_export_process=None
 
-        box=QMessageBox(self)
-        box.setWindowTitle('一括書き出し')
-        box.setIcon(QMessageBox.Icon.Information if not st['failures'] else QMessageBox.Icon.Warning)
-        total=len(st['paths'])
-        box.setText(('キャンセルしました。' if cancelled else '一括書き出しが完了しました。')+f'\n{st["saved"]} / {total}枚を保存しました。')
-        detail=f'保存先:\n{st["out"]}'
-        if st['failures']:
-            detail+=f'\n\n失敗: {len(st["failures"])}枚\n'+'\n'.join(st['failures'][:8])
-        box.setInformativeText(detail)
-        box.setMinimumWidth(680)
-        box.exec()
-        self.statusBar().showMessage('一括書き出し処理を終了しました',6000)
-        self._batch_state=None
+    def _batch_export_process_finished(self,exit_code,exit_status):
+        cancelled=self.batch_export_cancelled
+        done=getattr(self,'_batch_done',None)
+        failure=getattr(self,'_batch_last_failure','')
+        self._cleanup_batch_process_state()
+        self.batch_export_cancelled=False
+        if cancelled:
+            self.export_progress_label.setText('書き出し: キャンセル済み')
+            self.statusBar().showMessage('一括書き出しをキャンセルしました',5000)
+            return
+        if exit_code==0 and done:
+            saved,total,failed=done
+            self.export_progress_label.setText('書き出し: 完了')
+            msg=f'一括書き出しが完了しました。\n{saved} / {total}枚を保存しました。'
+            if failed:msg+=f'\n失敗: {failed}枚'
+            QMessageBox.information(self,'一括書き出し',msg)
+            self.statusBar().showMessage('バックグラウンド書き出しが完了しました',6000)
+        else:
+            self.export_progress_label.setText('書き出し: エラー')
+            QMessageBox.warning(self,'一括書き出し',f'バックグラウンド書き出しが終了しました。\n終了コード: {exit_code}\n{failure}')
+
+    def cancel_batch_export(self):
+        if not self.batch_export_running:return
+        self.batch_export_cancelled=True
+        self.export_progress_label.setText('書き出し: キャンセル処理中…')
+        proc=self.batch_export_process
+        if proc is not None and proc.state()!=QProcess.ProcessState.NotRunning:
+            proc.terminate()
+            QTimer.singleShot(1200,lambda p=proc: p.kill() if p.state()!=QProcess.ProcessState.NotRunning else None)
 
     def reset_display(self):
         for k in self.sliders:self.sliders[k].setValue(100)
@@ -2021,11 +2078,6 @@ class MovieShotAnalyzer(QMainWindow):
         for p in self.paths:
             self.frames[str(p)]=[tuple(q) for q in common]
         self.statusBar().showMessage(f'現在のフレームを全{len(self.paths)}画像に適用しました',5000)
-
-    def cancel_batch_export(self):
-        if self.batch_export_running:
-            self.batch_export_cancelled=True
-            self.export_progress_label.setText('書き出し: キャンセル処理中…')
 
     def reset_frame(self): self.frame_quad=[(0.,0.),(1.,0.),(1.,1.),(0.,1.)]; self.save_frame(); self.canvas.update()
     def save_frame(self):
@@ -2789,5 +2841,68 @@ class MovieShotAnalyzer(QMainWindow):
 
 
 
+def _apply_batch_snapshot(w,snap):
+    w.frames=copy.deepcopy(snap.get('frames',{}))
+    w.perspective_by_image=copy.deepcopy(snap.get('perspective_by_image',{}))
+    for name,val in snap.get('checks',{}).items():
+        obj=getattr(w,name,None)
+        if obj is not None and hasattr(obj,'setChecked'):obj.setChecked(bool(val))
+    for name,val in snap.get('sliders',{}).items():
+        if name in w.sliders:w.sliders[name].setValue(int(val))
+    vals=snap.get('values',{})
+    step_names=('frame_width','guide_width','point_size','perspective_line_width')
+    for name in step_names:
+        if name in vals and hasattr(w,name):getattr(w,name).value.setValue(float(vals[name]))
+    for name in ('frame_alpha','guide_alpha','perspective_alpha','workspace_scale'):
+        if name in vals and hasattr(w,name):getattr(w,name).setValue(int(vals[name]))
+    cols=snap.get('colors',{})
+    for name in ('helper_color','point_color','frame_color'):
+        if name in cols:setattr(w,name,cols[name])
+    if 'vp_ray_colors' in cols:w.vp_ray_colors=copy.deepcopy(cols['vp_ray_colors'])
+    w.vp_ray_counts=copy.deepcopy(snap.get('vp_ray_counts',w.vp_ray_counts))
+    w.vp_ray_visible=copy.deepcopy(snap.get('vp_ray_visible',w.vp_ray_visible))
+    helpers=snap.get('helpers',{})
+    w.helper_v=copy.deepcopy(helpers.get('v',[])); w.helper_h=copy.deepcopy(helpers.get('h',[])); w.helper_free=copy.deepcopy(helpers.get('free',[]))
+    if 'comp_guides' in snap:w.comp_guides=copy.deepcopy(snap['comp_guides'])
+    size=snap.get('window_size',[1400,900])
+    try:w.resize(max(900,int(size[0])),max(650,int(size[1])))
+    except Exception:w.resize(1400,900)
+
+
+def _run_batch_export_worker(snapshot_path):
+    try:
+        snap=json.loads(Path(snapshot_path).read_text(encoding='utf-8'))
+    except Exception as ex:
+        print(f'FAIL\\tsnapshot\\t{ex}',flush=True); return 2
+    app=QApplication([sys.argv[0]]); app.setApplicationName('Movie Shot Analyzer Export Worker')
+    w=MovieShotAnalyzer(); _apply_batch_snapshot(w,snap)
+    w.paths=[Path(x) for x in snap.get('paths',[])]
+    out=Path(snap.get('out','')); out.mkdir(parents=True,exist_ok=True)
+    # Give the worker its own real backing store, but keep it far outside the desktop.
+    # This preserves the proven canvas-grab export path without blocking or changing the main UI.
+    w.setWindowFlag(Qt.WindowType.Tool,True); w.move(-20000,-20000); w.show(); app.processEvents()
+    saved=0; failures=[]; total=len(w.paths)
+    for idx,path in enumerate(w.paths):
+        try:
+            w.current_index=idx; w.load_current(); app.processEvents()
+            qimg=w._render_export_image()
+            dest=out/(path.stem+'_guides.png')
+            if dest.exists():dest=out/(f'{path.stem}_{idx+1:04d}_guides.png')
+            if qimg is None or not qimg.save(str(dest),'PNG'):
+                failures.append(path.name)
+            else:saved+=1
+        except Exception as ex:
+            failures.append(f'{path.name}: {ex}')
+        print(f'PROGRESS\\t{idx+1}\\t{total}\\t{path.name}',flush=True)
+    if failures:
+        print('FAIL\\t'+' | '.join(failures[:8]),flush=True)
+    print(f'DONE\\t{saved}\\t{total}\\t{len(failures)}',flush=True)
+    w.close(); app.processEvents(); return 0 if saved or total==0 else 3
+
+
 if __name__=='__main__':
+    if '--batch-export-worker' in sys.argv:
+        try:i=sys.argv.index('--batch-export-worker'); snap=sys.argv[i+1]
+        except Exception:sys.exit(2)
+        sys.exit(_run_batch_export_worker(snap))
     app=QApplication(sys.argv); app.setApplicationName('Movie Shot Analyzer'); w=MovieShotAnalyzer(); w.show(); sys.exit(app.exec())
